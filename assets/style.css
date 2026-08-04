@@ -1,0 +1,64 @@
+/* ===========================================
+   OBE Analytics Pro Theme
+   =========================================== */
+
+/* Main App */
+.stApp {
+    background-color: #F5F7FA;
+}
+
+/* Headers */
+h1, h2, h3 {
+    color: #0F4C81;
+    font-weight: 700;
+}
+
+/* Sidebar */
+section[data-testid="stSidebar"] {
+    background-color: #0F4C81;
+}
+
+section[data-testid="stSidebar"] * {
+    color: white;
+}
+
+/* Metric Cards */
+div[data-testid="stMetric"] {
+    background: white;
+    border-radius: 12px;
+    padding: 18px;
+    border: 1px solid #E5E7EB;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+}
+
+/* Buttons */
+.stButton > button {
+    width: 100%;
+    border-radius: 10px;
+    font-weight: 600;
+    height: 45px;
+}
+
+/* Input Boxes */
+.stTextInput input,
+.stTextArea textarea,
+.stSelectbox {
+    border-radius: 8px;
+}
+
+/* Data Editor */
+div[data-testid="stDataFrame"] {
+    border-radius: 10px;
+    border: 1px solid #D9D9D9;
+}
+
+/* Progress Bar */
+div[data-testid="stProgressBar"] > div {
+    background-color: #1976D2;
+}
+
+/* Divider */
+hr {
+    margin-top: 15px;
+    margin-bottom: 15px;
+}
