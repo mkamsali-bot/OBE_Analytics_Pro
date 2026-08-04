@@ -9,8 +9,7 @@ from database import (
 import config
 
 
-def show():
-
+def show_co():
     st.header("🎯 Course Outcomes (COs)")
 
     st.write("Create and manage Course Outcomes.")
@@ -95,22 +94,26 @@ def show():
 
         for _, row in edited_df.iterrows():
 
-            statement = str(row["Course Outcome"]).strip()
+            statement = " ".join(
+                str(row["Course Outcome"]).split()
+            )
 
             if statement == "":
                 continue
 
             save_data.append(
-
                 (
                     f"CO{count}",
                     statement,
                     row["Bloom Level"]
                 )
-
             )
 
             count += 1
+
+        if len(save_data) == 0:
+            st.warning("Please enter at least one Course Outcome.")
+            return
 
         save_all_cos(save_data)
 
