@@ -1,4 +1,11 @@
 import streamlit as st
+import database
+
+st.write(database.__file__)
+st.stop()
+ 
+
+import streamlit as st
 from pathlib import Path
 
 # ----------------------------------------
