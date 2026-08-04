@@ -3,7 +3,7 @@ from database import get_course, save_course
 import config
 
 
-def show():
+def show_course():
 
     st.header("📘 Course Details")
     st.write("Enter the details of the course.")

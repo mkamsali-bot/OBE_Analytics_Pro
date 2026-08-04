@@ -21,3 +21,9 @@ from database.po import (
     preload_pos,
     get_all_pos,
 )
+
+from database.mapping import (
+    save_mapping,
+    get_mapping,
+    delete_mapping,
+)

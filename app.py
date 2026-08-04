@@ -34,12 +34,10 @@ st.set_page_config(
 # ---------------------------------
 # Load CSS
 # ---------------------------------
+# Load CSS
 try:
     with open("assets/style.css") as css:
-        st.markdown(
-            f"<style>{css.read()}</style>",
-            unsafe_allow_html=True
-        )
+        st.markdown(f"<style>{css.read()}</style>", unsafe_allow_html=True)
 except FileNotFoundError:
     pass
 

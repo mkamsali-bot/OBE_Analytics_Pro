@@ -1,4 +1,4 @@
 import streamlit as st
 
-def show():
+def show_reports():
     st.header("📄 Reports")
