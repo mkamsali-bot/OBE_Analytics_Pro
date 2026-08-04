@@ -1,3 +1,4 @@
+
 """
 OBE Analytics Pro v1.0.0
 Main Application
@@ -35,7 +36,10 @@ st.set_page_config(
 # ---------------------------------
 try:
     with open("assets/style.css") as css:
-        st.markdown(f"<style>{css.read()}</style>", unsafe_allow_html=True)
+        st.markdown(
+            f"<style>{css.read()}</style>",
+            unsafe_allow_html=True
+        )
 except FileNotFoundError:
     pass
 
@@ -50,16 +54,51 @@ page = st.sidebar.radio(
     MENU_ITEMS,
 )
 
-# ---------------------------------
+# ==========================================
 # Dashboard
-# ---------------------------------
+# ==========================================
 if page == "🏠 Dashboard":
     from modules.dashboard import show_dashboard
     show_dashboard()
 
-# ---------------------------------
-# Placeholder Modules
-# ---------------------------------
-else:
-    st.title(page)
-    st.info("🚧 This module will be implemented in the next milestone.")
+# ==========================================
+# Course
+# ==========================================
+elif page == "📘 Course":
+    from modules.course import show_course
+    show_course()
+
+# ==========================================
+# Course Outcomes
+# ==========================================
+elif page == "🎯 Course Outcomes":
+    from modules.co import show_co
+    show_co()
+
+# ==========================================
+# Program Outcomes
+# ==========================================
+elif page == "🎓 Program Outcomes":
+    from modules.po import show_po
+    show_po()
+
+# ==========================================
+# CO-PO Mapping
+# ==========================================
+elif page == "🔗 CO-PO Mapping":
+    from modules.mapping import show_mapping
+    show_mapping()
+
+# ==========================================
+# Preview
+# ==========================================
+elif page == "👁 Preview":
+    from modules.preview import show_preview
+    show_preview()
+
+# ==========================================
+# Reports
+# ==========================================
+elif page == "📄 Reports":
+    from modules.reports import show_reports
+    show_reports()
