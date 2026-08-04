@@ -1,122 +1,65 @@
-import streamlit as st
-import database
-
-st.write(database.__file__)
-st.stop()
- 
+"""
+OBE Analytics Pro v1.0.0
+Main Application
+"""
 
 import streamlit as st
-from pathlib import Path
 
-# ----------------------------------------
-# Application Modules
-# ----------------------------------------
-from database import initialize_database
-import config
-
-from modules import (
-    dashboard,
-    course,
-    co,
-    po,
-    mapping,
-    preview,
-    reports
+from config import (
+    APP_NAME,
+    VERSION,
+    PAGE_TITLE,
+    PAGE_ICON,
+    LAYOUT,
+    MENU_ITEMS,
 )
 
-# ----------------------------------------
-# Database Initialization
-# ----------------------------------------
+from database import initialize_database
+
+# ---------------------------------
+# Initialize Database
+# ---------------------------------
 initialize_database()
 
-# ----------------------------------------
+# ---------------------------------
 # Page Configuration
-# ----------------------------------------
+# ---------------------------------
 st.set_page_config(
-    page_title=config.PAGE_TITLE,
-    page_icon=config.PAGE_ICON,
-    layout=config.LAYOUT,
-    initial_sidebar_state="expanded"
+    page_title=PAGE_TITLE,
+    page_icon=PAGE_ICON,
+    layout=LAYOUT,
 )
 
-# ----------------------------------------
+# ---------------------------------
 # Load CSS
-# ----------------------------------------
-css_file = Path("assets/style.css")
+# ---------------------------------
+try:
+    with open("assets/style.css") as css:
+        st.markdown(f"<style>{css.read()}</style>", unsafe_allow_html=True)
+except FileNotFoundError:
+    pass
 
-if css_file.exists():
-    with open(css_file) as f:
-        st.markdown(
-            f"<style>{f.read()}</style>",
-            unsafe_allow_html=True
-        )
-
-# ----------------------------------------
+# ---------------------------------
 # Sidebar
-# ----------------------------------------
+# ---------------------------------
 st.sidebar.title("🎓 OBE Analytics Pro")
-st.sidebar.caption(f"Version {config.VERSION}")
+st.sidebar.caption(f"Version {VERSION}")
 
 page = st.sidebar.radio(
     "Navigation",
-    config.MENU_ITEMS
+    MENU_ITEMS,
 )
 
-st.sidebar.divider()
+# ---------------------------------
+# Dashboard
+# ---------------------------------
+if page == "🏠 Dashboard":
+    from modules.dashboard import show_dashboard
+    show_dashboard()
 
-st.sidebar.info(
-    "Outcome Based Education\n\n"
-    "Single Course Version"
-)
-
-# ----------------------------------------
-# Main Title
-# ----------------------------------------
-st.title("🎓 OBE Analytics Pro")
-
-st.caption(
-    "Outcome Based Education Analytics Platform"
-)
-
-st.divider()
-
-# ----------------------------------------
-# Navigation
-# ----------------------------------------
-try:
-
-    if page == "🏠 Dashboard":
-        dashboard.show()
-
-    elif page == "📘 Course":
-        course.show()
-
-    elif page == "🎯 Course Outcomes":
-        co.show()
-
-    elif page == "🎓 Program Outcomes":
-        po.show()
-
-    elif page == "🔗 CO-PO Mapping":
-        mapping.show()
-
-    elif page == "👁 Preview":
-        preview.show()
-
-    elif page == "📄 Reports":
-        reports.show()
-
-except Exception as e:
-
-    st.error("Application Error")
-
-    st.exception(e)
-
-# ----------------------------------------
-# Footer
-# ----------------------------------------
-st.divider()
-
-st.caption(
-    "© 2026 OBE Analytics Pro | Developed using Streamlit & SQLite"
-)
+# ---------------------------------
+# Placeholder Modules
+# ---------------------------------
+else:
+    st.title(page)
+    st.info("🚧 This module will be implemented in the next milestone.")
