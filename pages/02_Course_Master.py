@@ -4,6 +4,58 @@ OBE Analytics Pro v1.1.2
 """
 
 import streamlit as st
+import config
+
+from database import (
+    save_course,
+    delete_course,
+    get_all_courses,
+)
+
+# ---------------------------------------------------------
+# PAGE CONFIGURATION
+# ---------------------------------------------------------
+
+st.title("📘 Course Master")
+st.caption("Create and maintain course information")
+
+# ---------------------------------------------------------
+# DEFAULT VALUES
+# ---------------------------------------------------------
+
+DEFAULTS = {
+    "course_code": "",
+    "course_name": "",
+    "faculty": "",
+    "department": "",
+    "programme": "",
+    "semester": 1,
+    "credits": 4,
+    "academic_year": config.DEFAULT_ACADEMIC_YEAR,
+}
+
+# ---------------------------------------------------------
+# SESSION STATE INITIALIZATION
+# ---------------------------------------------------------
+
+for key, value in DEFAULTS.items():
+
+    if key not in st.session_state:
+        st.session_state[key] = value
+
+# ---------------------------------------------------------
+# HELPER FUNCTION
+# ---------------------------------------------------------
+
+def clear_form():
+    """
+    Reset all course fields to their default values.
+    """
+
+    for key, value in DEFAULTS.items():
+        st.session_state[key] = value
+
+import streamlit as st
 import pandas as pd
 
 from database import (
