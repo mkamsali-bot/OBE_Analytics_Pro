@@ -108,3 +108,49 @@ DEFAULT_ACADEMIC_YEAR = "2026-27"
 # -------------------------------
 
 TOTAL_POS = 12
+
+# ==========================================================
+# Assessment Configuration
+# ==========================================================
+
+# Assessment Pattern (Total = 100 Marks)
+ASSESSMENT_PATTERN = {
+    "LE": {
+        "name": "Learning Evaluation",
+        "marks": 25
+    },
+    "S1": {
+        "name": "Sessional-1",
+        "marks": 30
+    },
+    "S2": {
+        "name": "Sessional-2",
+        "marks": 45
+    }
+}
+
+TOTAL_INTERNAL_MARKS = 100
+
+# ==========================================================
+# Attainment Configuration
+# ==========================================================
+
+# Final CO Attainment = 80% Direct + 20% Indirect
+DIRECT_WEIGHT = 0.80
+
+INDIRECT_WEIGHT = 0.20
+
+# NBA Attainment Levels
+ATTAINMENT_LEVELS = [0, 1, 2, 3]
+
+# ==========================================================
+# Course End Survey
+# ==========================================================
+
+SURVEY_MAX_SCORE = 3.0
+
+# ==========================================================
+# Number of Course Outcomes
+# ==========================================================
+
+TOTAL_COS = 6

@@ -53,8 +53,10 @@ from database.mapping import (
 # ---------------------------------------------------------
 
 from database.co_distribution import (
+    get_courses,
     get_distribution,
     save_distribution,
+    delete_distribution,
     distribution_exists,
 )
 
