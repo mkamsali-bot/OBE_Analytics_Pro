@@ -1,6 +1,6 @@
 """
 CO-PO Mapping
-OBE Analytics Pro v1.1.2
+OBE Analytics Pro v1.2 RC2
 """
 
 import streamlit as st
@@ -12,26 +12,37 @@ from database import (
     save_mapping,
     get_mapping,
     delete_mapping,
+    get_course,
 )
-
-# ---------------------------------------------------------
-# PAGE TITLE
-# ---------------------------------------------------------
 
 st.title("📕 CO-PO Mapping")
 st.caption("Map Course Outcomes with Program Outcomes")
 
 # ---------------------------------------------------------
+# CURRENT COURSE
+# ---------------------------------------------------------
+
+course = get_course()
+
+if course is None:
+    st.warning("Please create a course first.")
+    st.stop()
+
+course_code = course[0]
+
+st.info(f"Course : {course_code}")
+
+# ---------------------------------------------------------
 # LOAD DATA
 # ---------------------------------------------------------
 
-cos = get_all_cos()
+cos = get_all_cos(course_code)
 pos = get_all_pos()
 
 co_list = [row[0] for row in cos]
 po_list = [row[0] for row in pos]
 
-saved = get_mapping()
+saved = get_mapping(course_code)
 
 if saved:
 
@@ -40,8 +51,8 @@ if saved:
         columns=[
             "CO",
             "PO",
-            "Level"
-        ]
+            "Level",
+        ],
     )
 
 else:
@@ -50,9 +61,10 @@ else:
         columns=[
             "CO",
             "PO",
-            "Level"
+            "Level",
         ]
     )
+
 
 # ---------------------------------------------------------
 # EDITOR
@@ -63,15 +75,15 @@ edited_df = st.data_editor(
     column_config={
         "CO": st.column_config.SelectboxColumn(
             "CO",
-            options=co_list
+            options=co_list,
         ),
         "PO": st.column_config.SelectboxColumn(
             "PO",
-            options=po_list
+            options=po_list,
         ),
         "Level": st.column_config.SelectboxColumn(
             "Level",
-            options=[0,1,2,3]
+            options=[0, 1, 2, 3],
         ),
     },
     num_rows="dynamic",
@@ -81,46 +93,56 @@ edited_df = st.data_editor(
 
 st.divider()
 
-col1,col2 = st.columns(2)
+col1, col2 = st.columns(2)
 
 with col1:
 
     save = st.button(
         "💾 Save Mapping",
-        use_container_width=True
+        use_container_width=True,
     )
 
 with col2:
 
     clear = st.button(
         "🗑 Clear Mapping",
-        use_container_width=True
+        use_container_width=True,
     )
 
+#
 # ---------------------------------------------------------
 # SAVE
 # ---------------------------------------------------------
 
 if save:
 
-    data=[]
+    data = []
 
-    for _,row in edited_df.iterrows():
+    for _, row in edited_df.iterrows():
 
-        if row["CO"] and row["PO"]:
+        if (
+            pd.isna(row["CO"])
+            or pd.isna(row["PO"])
+            or pd.isna(row["Level"])
+        ):
+            continue
 
-            data.append(
-
-                (
-                    row["CO"],
-                    row["PO"],
-                    int(row["Level"])
-                )
-
+        data.append(
+            (
+                str(row["CO"]),
+                str(row["PO"]),
+                int(float(row["Level"])),
             )
+        )
 
-    save_mapping(data)
+    st.write("Rows to be saved:")
+    st.write(data)
 
+    save_mapping(course_code, data)
+    st.write("Rows to be saved:")
+    st.write(data)
+
+    
     st.success("CO-PO Mapping saved successfully.")
 
     st.rerun()
@@ -131,7 +153,7 @@ if save:
 
 if clear:
 
-    delete_mapping()
+    delete_mapping(course_code)
 
     st.success("All mappings deleted.")
 
@@ -148,10 +170,10 @@ st.subheader("Current Mapping")
 st.dataframe(
     edited_df,
     use_container_width=True,
-    hide_index=True
+    hide_index=True,
 )
 
 st.metric(
     "Total Mappings",
-    len(edited_df)
+    len(edited_df),
 )

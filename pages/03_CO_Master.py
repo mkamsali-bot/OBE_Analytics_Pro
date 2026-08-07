@@ -1,8 +1,3 @@
-"""
-CO Master
-OBE Analytics Pro v1.1.2
-"""
-
 import streamlit as st
 import pandas as pd
 
@@ -10,6 +5,7 @@ from database import (
     save_all_cos,
     get_all_cos,
     delete_all_cos,
+    get_course,
 )
 
 # ---------------------------------------------------------
@@ -23,7 +19,17 @@ st.caption("Create and maintain Course Outcomes")
 # LOAD EXISTING DATA
 # ---------------------------------------------------------
 
-rows = get_all_cos()
+course = get_course()
+
+if course is None:
+    st.warning("Please create a course first.")
+    st.stop()
+
+course_code = course[0]
+
+st.info(f"Course : {course_code}")
+
+rows = get_all_cos(course_code)
 
 if rows:
 
@@ -51,7 +57,7 @@ else:
         "Bloom Level":["L1"]*6
     })
 
-    # ---------------------------------------------------------
+# ---------------------------------------------------------
 # EDITABLE TABLE
 # ---------------------------------------------------------
 
@@ -99,7 +105,7 @@ if save:
             )
         )
 
-    save_all_cos(data)
+    save_all_cos(course_code, data)
 
     st.success("Course Outcomes saved successfully.")
 
@@ -111,7 +117,7 @@ if save:
 
 if clear:
 
-    delete_all_cos()
+    delete_all_cos(course_code)
 
     st.success("All Course Outcomes deleted.")
 

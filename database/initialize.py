@@ -1,6 +1,6 @@
 """
 Database Initialization
-OBE Analytics Pro v1.1
+OBE Analytics Pro v1.2 RC2
 """
 
 from database.connection import get_connection
@@ -59,7 +59,7 @@ def initialize_database():
     cur.execute("""
     CREATE TABLE IF NOT EXISTS co_po_mapping (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        course_code TEXT UNIQUE,
+        course_code TEXT,
         co_no TEXT,
         po_no TEXT,
         level INTEGER,
@@ -78,13 +78,13 @@ def initialize_database():
     )
     """)
 
-    # ==========================================================
+        # ==========================================================
     # CO DISTRIBUTION
     # ==========================================================
     cur.execute("""
     CREATE TABLE IF NOT EXISTS co_distribution (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        course_code TEXT UNIQUE,
+        course_code TEXT,
         assessment_name TEXT,
         co_no TEXT,
         allocated_marks REAL,
@@ -98,7 +98,7 @@ def initialize_database():
     cur.execute("""
     CREATE TABLE IF NOT EXISTS student_marks (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        course_code TEXT UNIQUE,
+        course_code TEXT,
         reg_no TEXT,
         student_name TEXT,
         le REAL DEFAULT 0,
@@ -114,7 +114,7 @@ def initialize_database():
     cur.execute("""
     CREATE TABLE IF NOT EXISTS course_end_survey (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        course_code TEXT UNIQUE,
+        course_code TEXT,
         co_no TEXT,
         survey_attainment REAL,
         UNIQUE(course_code, co_no)
@@ -176,7 +176,7 @@ def initialize_database():
     )
     """)
 
-    # ==========================================================
+        # ==========================================================
     # DEFAULT ASSESSMENT PATTERN
     # ==========================================================
     cur.execute("SELECT COUNT(*) FROM assessment_pattern")

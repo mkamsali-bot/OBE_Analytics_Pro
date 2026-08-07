@@ -1,77 +1,108 @@
 """
 CO-PO Mapping Database Functions
-OBE Analytics Pro v1.0.0
+OBE Analytics Pro v1.2 RC2
 """
 
 from database.connection import get_connection
 
 
-def delete_mapping():
+def delete_mapping(course_code):
     """
-    Delete all CO-PO mappings.
-    """
-
-    conn = get_connection()
-    cur = conn.cursor()
-
-    cur.execute("DELETE FROM co_po_mapping")
-
-    conn.commit()
-    conn.close()
-
-
-def save_mapping(data):
-    """
-    Save all CO-PO mappings.
-
-    data format:
-    [
-        ("CO1", "PO1", 3),
-        ("CO1", "PO2", 2),
-        ("CO2", "PO1", 1),
-        ...
-    ]
+    Delete all mappings for the selected course.
     """
 
     conn = get_connection()
     cur = conn.cursor()
 
-    # Remove old mappings
-    cur.execute("DELETE FROM co_po_mapping")
-
-    # Insert new mappings
-    cur.executemany(
+    cur.execute(
         """
-        INSERT INTO co_po_mapping(
-            co_no,
-            po_no,
-            level
-        )
-        VALUES (?, ?, ?)
+        DELETE FROM co_po_mapping
+        WHERE course_code = ?
         """,
-        data,
+        (course_code,),
     )
 
     conn.commit()
     conn.close()
 
 
-def get_mapping():
+def save_mapping(course_code, data):
     """
-    Returns all saved mappings.
+    Save CO-PO mapping for one course.
+
+    Parameters
+    ----------
+    course_code : str
+
+    data :
+        [
+            ("CO1", "PO1", 3),
+            ("CO1", "PO2", 2),
+            ("CO2", "PO1", 1),
+            ...
+        ]
     """
 
     conn = get_connection()
     cur = conn.cursor()
 
-    cur.execute("""
+    # Remove existing mapping for this course
+    cur.execute(
+        """
+        DELETE FROM co_po_mapping
+        WHERE course_code = ?
+        """,
+        (course_code,),
+    )
+
+        # Insert fresh mapping
+
+    rows = [
+        (course_code, co_no, po_no, level)
+        for co_no, po_no, level in data
+    ]
+
+    print("Course:", course_code)
+    print("Rows:", rows)
+
+    cur.executemany(
+        """
+        INSERT INTO co_po_mapping
+        (
+            course_code,
+            co_no,
+            po_no,
+            level
+        )
+        VALUES (?, ?, ?, ?)
+        """,
+        rows,
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def get_mapping(course_code):
+    """
+    Returns all mappings for the selected course.
+    """
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
         SELECT
             co_no,
             po_no,
             level
         FROM co_po_mapping
+        WHERE course_code = ?
         ORDER BY co_no, po_no
-    """)
+        """,
+        (course_code,),
+    )
 
     rows = cur.fetchall()
 

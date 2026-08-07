@@ -57,6 +57,7 @@ with c1:
                     "s1":int(r["S1"]) if pd.notna(r["S1"]) else 0,
                     "s2":int(r["S2"]) if pd.notna(r["S2"]) else 0,
                 })
+        st.write(students)
         save_bulk_marks(course_code,students)
         st.success("Student marks saved successfully.")
         st.rerun()

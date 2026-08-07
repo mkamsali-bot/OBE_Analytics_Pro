@@ -1,99 +1,298 @@
-
 """
-pages/08_CO_Attainment.py
-Simple CO Attainment
+------------------------------------------------------------
+OBE Analytics Pro v1.2 RC1
+Module : 08_CO_Attainment.py
+Purpose : Course Outcome (CO) Attainment
+------------------------------------------------------------
 """
 
 import streamlit as st
 import pandas as pd
+
 from database.connection import get_connection
-from database.co_distribution import get_courses
+from database.course import get_course
 
-st.title("📈 CO Attainment")
-st.caption("Simple Direct CO Attainment")
+# ---------------------------------------------------------
+# Page Configuration
+# ---------------------------------------------------------
 
-courses=get_courses()
-if not courses:
-    st.warning("No courses available.")
+st.set_page_config(
+    page_title="CO Attainment",
+    page_icon="📈",
+    layout="wide"
+)
+
+st.title("📈 Course Outcome (CO) Attainment")
+st.caption("Direct CO Attainment Calculation")
+
+# ---------------------------------------------------------
+# Current Course
+# ---------------------------------------------------------
+
+course = get_course()
+
+if course is None:
+    st.warning("Please create/select a course first.")
     st.stop()
 
-course_map={f"{r[0]} - {r[1]}":r[0] for r in courses}
-course_label=st.selectbox("Course", list(course_map.keys()))
-course_code=course_map[course_label]
+course_code = course[0]
 
-def calculate(course_code):
-    conn=get_connection()
-    cur=conn.cursor()
+st.info(f"Selected Course : {course_code}")
 
-    cur.execute("""
-        SELECT co_no,SUM(allocated_marks)
-        FROM co_distribution
-        WHERE course_code=?
-        GROUP BY co_no
-        ORDER BY co_no
-    """, (course_code,))
-    cos=cur.fetchall()
+# ---------------------------------------------------------
+# Load CO Distribution
+# ---------------------------------------------------------
 
-    cur.execute("""
-        SELECT reg_no,le,s1,s2
-        FROM student_marks
-        WHERE course_code=?
-    """, (course_code,))
-    students=cur.fetchall()
+conn = get_connection()
 
-    total_students=len(students)
-    results=[]
+co_df = pd.read_sql_query(
+    """
+    SELECT
+        co_no,
+        SUM(allocated_marks) AS max_marks
+    FROM co_distribution
+    WHERE course_code=?
+    GROUP BY co_no
+    ORDER BY co_no
+    """,
+    conn,
+    params=(course_code,)
+)
 
-    cur.execute("DELETE FROM direct_attainment WHERE course_code=?", (course_code,))
+# ---------------------------------------------------------
+# Load Student Marks
+# ---------------------------------------------------------
 
-    for row in cos:
-        co=row["co_no"] if hasattr(row,"keys") else row[0]
-        max_marks=float((row["SUM(allocated_marks)"] if hasattr(row,"keys") else row[1]) or 0)
-        target=0.6*max_marks
-        qualified=0
-        total=0
+marks_df = pd.read_sql_query(
+    """
+    SELECT
+        reg_no,
+        le,
+        s1,
+        s2
+    FROM student_marks
+    WHERE course_code=?
+    ORDER BY reg_no
+    """,
+    conn,
+    params=(course_code,)
+)
 
-        for s in students:
-            score=float((s["le"] or 0)+(s["s1"] or 0)+(s["s2"] or 0))
-            total+=score
-            if score>=target:
-                qualified+=1
+if co_df.empty:
+    st.error("CO Distribution not available.")
+    conn.close()
+    st.stop()
 
-        percent=(qualified/total_students*100) if total_students else 0
+if marks_df.empty:
+    st.error("Student Marks not available.")
+    conn.close()
+    st.stop()
 
-        if percent>=70:
-            level=3
-        elif percent>=60:
-            level=2
+# ---------------------------------------------------------
+# Display Input Data
+# ---------------------------------------------------------
+
+left, right = st.columns(2)
+
+with left:
+
+    st.subheader("CO Distribution")
+
+    st.dataframe(
+        co_df,
+        use_container_width=True,
+        hide_index=True
+    )
+
+with right:
+
+    st.subheader("Student Marks")
+
+    st.dataframe(
+        marks_df,
+        use_container_width=True,
+        hide_index=True
+    )
+
+st.divider()
+
+calculate = st.button(
+    "📊 Calculate CO Attainment",
+    use_container_width=True,
+    key="calculate_co_attainment"
+)
+
+# ---------------------------------------------------------
+# CO Attainment Calculation
+# ---------------------------------------------------------
+
+if calculate:
+
+    total_students = len(marks_df)
+
+    results = []
+
+    for _, co in co_df.iterrows():
+
+        co_no = co["co_no"]
+
+        max_marks = float(co["max_marks"])
+
+        target_marks = 0.60 * max_marks
+
+        qualified = 0
+
+        for _, student in marks_df.iterrows():
+
+            obtained = (
+                float(student["le"] or 0)
+                + float(student["s1"] or 0)
+                + float(student["s2"] or 0)
+            )
+
+            if obtained >= target_marks:
+                qualified += 1
+
+        attainment_percent = (
+            qualified / total_students
+        ) * 100
+
+        if attainment_percent >= 70:
+            level = 3
+        elif attainment_percent >= 60:
+            level = 2
         else:
-            level=1
+            level = 1
 
-        cur.execute(
-            "INSERT OR REPLACE INTO direct_attainment(course_code,co_no,attainment) VALUES(?,?,?)",
-            (course_code,co,level)
+        results.append(
+            {
+                "CO": co_no,
+                "Maximum Marks": round(max_marks, 2),
+                "Target Marks": round(target_marks, 2),
+                "Qualified Students": qualified,
+                "Total Students": total_students,
+                "Attainment %": round(attainment_percent, 2),
+                "Direct Level": level,
+            }
         )
 
-        results.append({
-            "CO":co,
-            "Max Marks":round(max_marks,2),
-            "Target":round(target,2),
-            "Qualified":qualified,
-            "Attainment %":round(percent,2),
-            "Level":level
-        })
+    result_df = pd.DataFrame(results)
+        # ---------------------------------------------------------
+    # Save Results to Database
+    # ---------------------------------------------------------
+
+    cur = conn.cursor()
+
+    # Remove previous calculations
+    cur.execute(
+        "DELETE FROM direct_attainment WHERE course_code=?",
+        (course_code,)
+    )
+
+    cur.execute(
+        "DELETE FROM final_co_attainment WHERE course_code=?",
+        (course_code,)
+    )
+
+    # Save each CO
+    for _, row in result_df.iterrows():
+
+        co = row["CO"]
+        level = int(row["Direct Level"])
+
+        # Direct Attainment
+        cur.execute(
+            """
+            INSERT INTO direct_attainment
+            (
+                course_code,
+                co_no,
+                attainment
+            )
+            VALUES (?, ?, ?)
+            """,
+            (
+                course_code,
+                co,
+                level
+            )
+        )
+
+        # Final CO Attainment
+        # (Temporary: Survey = Direct)
+        cur.execute(
+            """
+            INSERT INTO final_co_attainment
+            (
+                course_code,
+                co_no,
+                direct,
+                survey,
+                final
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                course_code,
+                co,
+                level,
+                level,
+                level
+            )
+        )
 
     conn.commit()
-    conn.close()
-    return pd.DataFrame(results)
 
-if st.button("📊 Calculate CO Attainment", use_container_width=True):
-    df=calculate(course_code)
-    if df.empty:
-        st.warning("No CO Distribution found.")
-    else:
-        st.success("CO Attainment calculated.")
-        st.dataframe(df, use_container_width=True, hide_index=True)
-        c1,c2,c3=st.columns(3)
-        c1.metric("COs", len(df))
-        c2.metric("Average Level", round(df["Level"].mean(),2))
-        c3.metric("Average %", round(df["Attainment %"].mean(),2))
+    # ---------------------------------------------------------
+    # Display Results
+    # ---------------------------------------------------------
+
+    st.success("CO Attainment calculated successfully.")
+
+    st.subheader("CO Attainment Results")
+
+    st.dataframe(
+        result_df,
+        use_container_width=True,
+        hide_index=True
+    )
+
+    st.divider()
+
+    c1, c2, c3 = st.columns(3)
+
+    with c1:
+        st.metric(
+            "Total COs",
+            len(result_df)
+        )
+
+    with c2:
+        st.metric(
+            "Average Direct Level",
+            round(
+                result_df["Direct Level"].mean(),
+                2
+            )
+        )
+
+    with c3:
+        st.metric(
+            "Average Attainment %",
+            f"{result_df['Attainment %'].mean():.2f}%"
+        )
+
+    st.divider()
+
+    st.subheader("Direct CO Attainment")
+
+    chart_df = result_df[
+        ["CO", "Direct Level"]
+    ]
+
+    st.bar_chart(
+        chart_df.set_index("CO")
+    )
+
+    conn.close()
+
