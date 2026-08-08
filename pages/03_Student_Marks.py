@@ -1,337 +1,542 @@
 """
-=========================================================
 OBE Analytics Pro v1.3
-03_Student_Marks.py
-Student Marks
-=========================================================
+03_Marks_Entry.py
+STEP 7 - MARKS ENTRY + CE GRADE CONVERSION
 
-Step 2:
-    Theory + Practical assessment entry.
+CE grade conversion applies ONLY to:
+    1. Theory
+    2. Theory + Practical
 
-Theory:
-    Roll Number | Student Name | CE | S1 | S2
+Grade conversion:
+    O   = 100% -> 25.00
+    A+  =  89% -> 22.25
+    A   =  79% -> 19.75
+    B+  =  69% -> 17.25
+    B   =  59% -> 14.75
+    C   =  54% -> 13.50
+    P   =  49% -> 12.25
+    L/F =   0% ->  0.00
 
-Theory + Practical:
-    Roll Number | Student Name | CE | S1 | S2 |
-    Record Work | Mid 1 | Mid 2
+Normalized CE mark = Upper Value (%) / 4
 
-Practical:
-    Record Work = 60 marks
-    Mid 1       = 20 marks
-    Mid 2       = 20 marks
-    Total       = 100 marks
-
-Practical CO distribution is fixed for the next
-calculation step:
-    Record Work -> CO1-CO5 equally
-    Mid 1       -> CO1-CO2 equally
-    Mid 2       -> CO3-CO5 equally
-
-IMPORTANT:
-    This step stores the practical marks only.
-    The 70:30 calculation and CO attainment changes
-    are NOT implemented yet.
-=========================================================
+This module handles data entry/import only.
+It does NOT calculate CO attainment or PO attainment.
 """
 
-import streamlit as st
-import pandas as pd
+from __future__ import annotations
+
+import sqlite3
 from io import BytesIO
+from typing import Any, Dict, List
+
+import pandas as pd
+import streamlit as st
 
 from database import (
-    get_active_course,
+    execute_query,
+    fetch_all,
     fetch_one,
-    fetch_dataframe,
-    execute_query
+    get_active_course,
+    get_connection,
+    initialize_database,
 )
 
-
-# -------------------------------------------------------
-# Page Configuration
-# -------------------------------------------------------
 
 st.set_page_config(
-    page_title="Student Marks",
+    page_title="OBE Analytics Pro - Marks Entry",
     page_icon="📝",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded",
 )
 
-st.title("📝 Student Marks")
-st.divider()
+initialize_database()
 
 
-# -------------------------------------------------------
-# Active Course
-# -------------------------------------------------------
+# ------------------------------------------------------------
+# CE Grade Conversion
+# ------------------------------------------------------------
 
-course = get_active_course()
-
-if course is None:
-
-    st.warning(
-        "Please select an Active Course from the Course page."
-    )
-
-    st.stop()
-
-
-course_type = (
-    course["course_type"]
-    if "course_type" in course.keys()
-    and course["course_type"]
-    else "Theory"
-)
-
-st.success(
-    f"""
-### Active Course
-
-**Course Code :** {course['course_code']}
-
-**Course Name :** {course['course_name']}
-
-**Course Type :** {course_type}
-
-**Faculty :** {course['faculty']}
-
-**Semester :** {course['semester']}
-
-**Academic Year :** {course['academic_year']}
-"""
-)
-
-st.divider()
+CE_GRADE_UPPER_PERCENT = {
+    "O": 100.0,
+    "A+": 89.0,
+    "A": 79.0,
+    "B+": 69.0,
+    "B": 59.0,
+    "C": 54.0,
+    "P": 49.0,
+    "L": 0.0,
+    "F": 0.0,
+}
 
 
-# -------------------------------------------------------
-# Prepare Practical Columns
-# -------------------------------------------------------
+def normalize_grade(value: Any) -> str:
+    if pd.isna(value):
+        return ""
 
-try:
+    return str(value).strip().upper().replace(" ", "")
 
-    columns = fetch_dataframe(
-        "PRAGMA table_info(marks)"
-    )
 
-    existing_columns = set(
-        columns["name"].tolist()
-    )
+def grade_to_ce_mark(grade: Any) -> float:
+    normalized = normalize_grade(grade)
 
-    practical_columns = {
-        "record_work": "REAL DEFAULT 0",
-        "practical_mid1": "REAL DEFAULT 0",
-        "practical_mid2": "REAL DEFAULT 0"
+    if normalized not in CE_GRADE_UPPER_PERCENT:
+        raise ValueError(
+            f"Invalid CE grade '{grade}'. "
+            "Allowed grades: O, A+, A, B+, B, C, P, L, F."
+        )
+
+    return CE_GRADE_UPPER_PERCENT[normalized] / 4.0
+
+
+def ensure_marks_columns() -> None:
+    """
+    Safely extend the existing marks table for the assessment structures.
+    Existing data is preserved.
+    """
+    conn = get_connection()
+
+    columns = {
+        row["name"]
+        for row in conn.execute(
+            "PRAGMA table_info(marks)"
+        ).fetchall()
     }
 
-    for column_name, column_definition in practical_columns.items():
+    additions = {
+        "ce_grade": "TEXT",
+        "record_work": "REAL",
+        "mid1": "REAL",
+        "mid2": "REAL",
+        "continuous_evaluation": "REAL",
+    }
 
-        if column_name not in existing_columns:
+    changed = False
 
-            execute_query(
-                f"""
-                ALTER TABLE marks
-                ADD COLUMN {column_name} {column_definition}
-                """
+    for column, sql_type in additions.items():
+        if column not in columns:
+            conn.execute(
+                f'ALTER TABLE marks ADD COLUMN "{column}" {sql_type}'
             )
+            changed = True
 
-except Exception as e:
+    if changed:
+        conn.commit()
 
-    st.error(
-        "Unable to prepare Practical Marks fields."
+    conn.close()
+
+
+ensure_marks_columns()
+
+
+# ------------------------------------------------------------
+# Active Course
+# ------------------------------------------------------------
+
+active_course = get_active_course()
+
+st.title("📝 Marks Entry")
+st.caption(
+    "OBE Analytics Pro v1.3 · STEP 7 - CE Grade Conversion + Marks Import"
+)
+
+if active_course is None:
+    st.warning(
+        "No Active Course is selected. "
+        "Go to Course Management and select an Active Course first."
     )
-
-    st.exception(e)
-
     st.stop()
 
+course_id = int(active_course["id"])
+course_type = active_course["course_type"] or "Theory"
 
-# -------------------------------------------------------
-# Entry Mode
-# -------------------------------------------------------
-
-entry_mode = st.radio(
-    "Select Entry Mode",
-    [
-        "Manual Entry",
-        "Upload Excel"
-    ],
-    horizontal=True
+st.success(
+    f"Active Course: {active_course['course_code']} - "
+    f"{active_course['course_name']} | {course_type}"
 )
 
 
-# =======================================================
-# MANUAL ENTRY
-# =======================================================
+# ------------------------------------------------------------
+# Course-specific assessment structure
+# ------------------------------------------------------------
 
-if entry_mode == "Manual Entry":
+st.subheader("Assessment Structure")
 
-    st.subheader(
-        "Manual Student Entry"
+if course_type == "Theory":
+    st.write("CE Grade → normalized CE mark /25")
+    st.write("S1")
+    st.write("S2")
+
+elif course_type == "Theory + Practical":
+    st.write("Theory: CE + S1 + S2 → 70%")
+    st.write("Practical: Record Work /60 + Mid 1 /20 + Mid 2 /20 → 30%")
+
+elif course_type == "Capstone Project":
+    st.write("Continuous Evaluation /100")
+    st.info(
+        "CE grade conversion is not applicable to Capstone Project."
     )
 
-    with st.form("student_form"):
+elif course_type == "Internship":
+    st.write("Continuous Evaluation /50")
+    st.info(
+        "CE grade conversion is not applicable to Internship."
+    )
 
-        col1, col2 = st.columns(2)
 
-        # ------------------------------------------------
-        # Student Details
-        # ------------------------------------------------
+# ------------------------------------------------------------
+# CE Conversion Reference
+# ------------------------------------------------------------
 
-        with col1:
+if course_type in {"Theory", "Theory + Practical"}:
 
-            roll_no = st.text_input(
-                "Roll Number"
+    with st.expander(
+        "CE Grade → Normalized Mark Conversion",
+        expanded=True,
+    ):
+
+        conversion_rows = []
+
+        for grade, upper_percent in CE_GRADE_UPPER_PERCENT.items():
+            conversion_rows.append(
+                {
+                    "CE Grade": grade,
+                    "Upper Value (%)": upper_percent,
+                    "Normalized CE Mark (/25)": round(
+                        upper_percent / 4.0,
+                        2,
+                    ),
+                }
             )
 
-            student_name = st.text_input(
-                "Student Name"
-            )
-
-        # ------------------------------------------------
-        # Theory Marks
-        # ------------------------------------------------
-
-        with col2:
-
-            ce = st.number_input(
-                f"CE ({course['ce_max']})",
-                min_value=0.0,
-                max_value=float(course["ce_max"]),
-                value=0.0,
-                step=0.5
-            )
-
-            s1 = st.number_input(
-                f"S1 ({course['s1_max']})",
-                min_value=0.0,
-                max_value=float(course["s1_max"]),
-                value=0.0,
-                step=0.5
-            )
-
-            s2 = st.number_input(
-                f"S2 ({course['s2_max']})",
-                min_value=0.0,
-                max_value=float(course["s2_max"]),
-                value=0.0,
-                step=0.5
-            )
-
-        # ------------------------------------------------
-        # Practical Marks
-        # ------------------------------------------------
-
-        if course_type == "Theory + Practical":
-
-            st.divider()
-
-            st.subheader(
-                "Practical Component"
-            )
-
-            p1, p2, p3 = st.columns(3)
-
-            with p1:
-
-                record_work = st.number_input(
-                    "Record Work (60)",
-                    min_value=0.0,
-                    max_value=60.0,
-                    value=0.0,
-                    step=0.5
-                )
-
-            with p2:
-
-                practical_mid1 = st.number_input(
-                    "Practical Mid 1 (20)",
-                    min_value=0.0,
-                    max_value=20.0,
-                    value=0.0,
-                    step=0.5
-                )
-
-            with p3:
-
-                practical_mid2 = st.number_input(
-                    "Practical Mid 2 (20)",
-                    min_value=0.0,
-                    max_value=20.0,
-                    value=0.0,
-                    step=0.5
-                )
-
-            practical_total = (
-                record_work
-                + practical_mid1
-                + practical_mid2
-            )
-
-            st.info(
-                f"Practical Total = "
-                f"{practical_total:.2f} / 100"
-            )
-
-        else:
-
-            record_work = 0.0
-            practical_mid1 = 0.0
-            practical_mid2 = 0.0
-
-        # ------------------------------------------------
-        # Theory Total
-        # ------------------------------------------------
-
-        theory_total = ce + s1 + s2
-
-        st.info(
-            f"Theory Total = {theory_total:.2f}"
+        st.dataframe(
+            conversion_rows,
+            use_container_width=True,
+            hide_index=True,
         )
 
-        save_student = st.form_submit_button(
-            "💾 Save Student"
+
+# ------------------------------------------------------------
+# Excel Template
+# ------------------------------------------------------------
+
+st.divider()
+st.subheader("Excel Import")
+
+if course_type == "Theory":
+    expected_columns = [
+        "Roll Number",
+        "Student Name",
+        "CE Grade",
+        "S1",
+        "S2",
+    ]
+
+elif course_type == "Theory + Practical":
+    expected_columns = [
+        "Roll Number",
+        "Student Name",
+        "CE Grade",
+        "S1",
+        "S2",
+        "Record Work",
+        "Mid 1",
+        "Mid 2",
+    ]
+
+elif course_type == "Capstone Project":
+    expected_columns = [
+        "Roll Number",
+        "Student Name",
+        "Continuous Evaluation",
+    ]
+
+else:
+    expected_columns = [
+        "Roll Number",
+        "Student Name",
+        "Continuous Evaluation",
+    ]
+
+
+st.write("Required Excel columns:")
+
+st.code("\n".join(expected_columns))
+
+template_df = pd.DataFrame(columns=expected_columns)
+
+st.download_button(
+    "Download Excel Template",
+    data=(
+        __import__("io").BytesIO()
+    ).getvalue()
+    if False
+    else template_df.to_csv(index=False).encode("utf-8"),
+    file_name=f"{active_course['course_code']}_{course_type.replace(' ', '_')}_Marks_Template.csv",
+    mime="text/csv",
+)
+
+uploaded_file = st.file_uploader(
+    "Upload Student Marks Excel/CSV",
+    type=["xlsx", "xls", "csv"],
+)
+
+
+# ------------------------------------------------------------
+# Read upload
+# ------------------------------------------------------------
+
+def read_uploaded_file(uploaded) -> pd.DataFrame:
+
+    if uploaded.name.lower().endswith(".csv"):
+        return pd.read_csv(uploaded)
+
+    return pd.read_excel(uploaded)
+
+
+def validate_columns(
+    dataframe: pd.DataFrame,
+    required: List[str],
+) -> List[str]:
+
+    actual = {
+        str(column).strip()
+        for column in dataframe.columns
+    }
+
+    return [
+        column
+        for column in required
+        if column not in actual
+    ]
+
+
+def numeric_value(value: Any, field: str) -> float:
+
+    if pd.isna(value) or str(value).strip() == "":
+        return 0.0
+
+    try:
+        return float(value)
+    except Exception:
+        raise ValueError(
+            f"{field} must be numeric."
         )
 
-    # ---------------------------------------------------
-    # Save Student
-    # ---------------------------------------------------
 
-    if save_student:
+if uploaded_file is not None:
 
-        if roll_no.strip() == "":
+    try:
 
+        dataframe = read_uploaded_file(uploaded_file)
+
+        missing = validate_columns(
+            dataframe,
+            expected_columns,
+        )
+
+        if missing:
             st.error(
-                "Roll Number is required."
+                "Missing required columns: "
+                + ", ".join(missing)
             )
+            st.stop()
 
-        elif student_name.strip() == "":
+        st.success(
+            f"{len(dataframe)} student record(s) loaded."
+        )
 
-            st.error(
-                "Student Name is required."
-            )
+        st.dataframe(
+            dataframe,
+            use_container_width=True,
+            hide_index=True,
+        )
 
-        else:
+    except Exception as exc:
+        st.error("Unable to read the uploaded file.")
+        st.exception(exc)
+        st.stop()
 
-            student = fetch_one(
-                """
-                SELECT *
-                FROM marks
-                WHERE course_id=?
-                AND student_id=?
-                """,
-                (
-                    course["id"],
-                    roll_no.strip()
+
+# ------------------------------------------------------------
+# Save imported marks
+# ------------------------------------------------------------
+
+if uploaded_file is not None:
+
+    if st.button(
+        "Validate and Save Marks",
+        type="primary",
+    ):
+
+        errors = []
+        prepared_rows: List[Dict[str, Any]] = []
+
+        for index, row in dataframe.iterrows():
+
+            excel_row = index + 2
+
+            roll_number = str(
+                row["Roll Number"]
+            ).strip()
+
+            student_name = str(
+                row["Student Name"]
+            ).strip()
+
+            if not roll_number:
+                errors.append(
+                    f"Excel row {excel_row}: Roll Number is required."
                 )
-            )
+                continue
+
+            if not student_name:
+                errors.append(
+                    f"Excel row {excel_row}: Student Name is required."
+                )
+                continue
 
             try:
 
-                if student is not None:
+                record = {
+                    "student_id": roll_number,
+                    "student_name": student_name,
+                    "ce": None,
+                    "ce_grade": None,
+                    "s1": None,
+                    "s2": None,
+                    "record_work": None,
+                    "mid1": None,
+                    "mid2": None,
+                    "continuous_evaluation": None,
+                }
 
-                    if course_type == "Theory + Practical":
+                if course_type in {
+                    "Theory",
+                    "Theory + Practical",
+                }:
 
-                        execute_query(
+                    grade = normalize_grade(
+                        row["CE Grade"]
+                    )
+
+                    if grade not in CE_GRADE_UPPER_PERCENT:
+                        raise ValueError(
+                            f"Invalid CE Grade '{row['CE Grade']}'."
+                        )
+
+                    record["ce_grade"] = grade
+                    record["ce"] = grade_to_ce_mark(grade)
+
+                    record["s1"] = numeric_value(
+                        row["S1"],
+                        "S1",
+                    )
+
+                    record["s2"] = numeric_value(
+                        row["S2"],
+                        "S2",
+                    )
+
+                if course_type == "Theory + Practical":
+
+                    record["record_work"] = numeric_value(
+                        row["Record Work"],
+                        "Record Work",
+                    )
+
+                    record["mid1"] = numeric_value(
+                        row["Mid 1"],
+                        "Mid 1",
+                    )
+
+                    record["mid2"] = numeric_value(
+                        row["Mid 2"],
+                        "Mid 2",
+                    )
+
+                    if record["record_work"] > 60:
+                        raise ValueError(
+                            "Record Work cannot exceed 60."
+                        )
+
+                    if record["mid1"] > 20:
+                        raise ValueError(
+                            "Mid 1 cannot exceed 20."
+                        )
+
+                    if record["mid2"] > 20:
+                        raise ValueError(
+                            "Mid 2 cannot exceed 20."
+                        )
+
+                elif course_type in {
+                    "Capstone Project",
+                    "Internship",
+                }:
+
+                    record["continuous_evaluation"] = numeric_value(
+                        row["Continuous Evaluation"],
+                        "Continuous Evaluation",
+                    )
+
+                    maximum = (
+                        100
+                        if course_type == "Capstone Project"
+                        else 50
+                    )
+
+                    if (
+                        record["continuous_evaluation"]
+                        > maximum
+                    ):
+                        raise ValueError(
+                            f"Continuous Evaluation cannot exceed {maximum}."
+                        )
+
+                prepared_rows.append(record)
+
+            except ValueError as exc:
+
+                errors.append(
+                    f"Excel row {excel_row}: {exc}"
+                )
+
+        if errors:
+
+            st.error(
+                f"{len(errors)} validation error(s) found."
+            )
+
+            for error in errors:
+                st.error(error)
+
+        else:
+
+            try:
+
+                conn = get_connection()
+                cur = conn.cursor()
+
+                for record in prepared_rows:
+
+                    cur.execute(
+                        """
+                        SELECT id
+                        FROM marks
+                        WHERE course_id=?
+                          AND student_id=?
+                        """,
+                        (
+                            course_id,
+                            record["student_id"],
+                        ),
+                    )
+
+                    existing = cur.fetchone()
+
+                    if existing:
+
+                        cur.execute(
                             """
                             UPDATE marks
                             SET
@@ -339,766 +544,160 @@ if entry_mode == "Manual Entry":
                                 ce=?,
                                 s1=?,
                                 s2=?,
+                                ce_grade=?,
                                 record_work=?,
-                                practical_mid1=?,
-                                practical_mid2=?
+                                mid1=?,
+                                mid2=?,
+                                continuous_evaluation=?
                             WHERE course_id=?
-                            AND student_id=?
+                              AND student_id=?
                             """,
                             (
-                                student_name.strip(),
-                                ce,
-                                s1,
-                                s2,
-                                record_work,
-                                practical_mid1,
-                                practical_mid2,
-                                course["id"],
-                                roll_no.strip()
-                            )
-                        )
-
-                        st.success(
-                            "Existing student updated successfully."
+                                record["student_name"],
+                                record["ce"],
+                                record["s1"],
+                                record["s2"],
+                                record["ce_grade"],
+                                record["record_work"],
+                                record["mid1"],
+                                record["mid2"],
+                                record["continuous_evaluation"],
+                                course_id,
+                                record["student_id"],
+                            ),
                         )
 
                     else:
 
-                        st.warning(
-                            "Roll Number already exists."
-                        )
-
-                else:
-
-                    execute_query(
-                        """
-                        INSERT INTO marks
-                        (
-                            course_id,
-                            student_id,
-                            student_name,
-                            ce,
-                            s1,
-                            s2,
-                            record_work,
-                            practical_mid1,
-                            practical_mid2
-                        )
-                        VALUES
-                        (
-                            ?,?,?,?,?,?,?,?,?
-                        )
-                        """,
-                        (
-                            course["id"],
-                            roll_no.strip(),
-                            student_name.strip(),
-                            ce,
-                            s1,
-                            s2,
-                            record_work,
-                            practical_mid1,
-                            practical_mid2
-                        )
-                    )
-
-                    st.success(
-                        "Student saved successfully."
-                    )
-
-            except Exception as e:
-
-                st.error(
-                    "Unable to save student."
-                )
-
-                st.exception(e)
-
-
-# =======================================================
-# EXCEL UPLOAD
-# =======================================================
-
-else:
-
-    st.subheader(
-        "📂 Upload Student Marks"
-    )
-
-    if course_type == "Theory":
-
-        required_columns = [
-            "Roll Number",
-            "Student Name",
-            "CE",
-            "S1",
-            "S2"
-        ]
-
-        st.info(
-            "Theory Excel columns: "
-            "Roll Number, Student Name, CE, S1, S2"
-        )
-
-    elif course_type == "Theory + Practical":
-
-        required_columns = [
-            "Roll Number",
-            "Student Name",
-            "CE",
-            "S1",
-            "S2",
-            "Record Work",
-            "Mid 1",
-            "Mid 2"
-        ]
-
-        st.info(
-            "Theory + Practical Excel columns: "
-            "Roll Number, Student Name, CE, S1, S2, "
-            "Record Work, Mid 1, Mid 2"
-        )
-
-    else:
-
-        required_columns = [
-            "Roll Number",
-            "Student Name"
-        ]
-
-        st.info(
-            "Student identity can be uploaded now. "
-            "Assessment rules for Capstone Project and "
-            "Internship will be added later."
-        )
-
-    # ---------------------------------------------------
-    # Template
-    # ---------------------------------------------------
-
-    template = pd.DataFrame(
-        columns=required_columns
-    )
-
-    template_buffer = BytesIO()
-
-    with pd.ExcelWriter(
-        template_buffer,
-        engine="openpyxl"
-    ) as writer:
-
-        template.to_excel(
-            writer,
-            index=False,
-            sheet_name="Student Marks"
-        )
-
-    st.download_button(
-        "⬇️ Download Excel Template",
-        data=template_buffer.getvalue(),
-        file_name=(
-            "Theory_Practical_Student_Marks_Template.xlsx"
-            if course_type == "Theory + Practical"
-            else "Student_Marks_Template.xlsx"
-        ),
-        mime=(
-            "application/vnd.openxmlformats-officedocument."
-            "spreadsheetml.sheet"
-        )
-    )
-
-    uploaded_file = st.file_uploader(
-        "Choose Excel File",
-        type=["xlsx"]
-    )
-
-    if uploaded_file is not None:
-
-        try:
-
-            df = pd.read_excel(
-                uploaded_file
-            )
-
-            # -------------------------------------------
-            # Column Validation
-            # -------------------------------------------
-
-            missing_columns = [
-                column
-                for column in required_columns
-                if column not in df.columns
-            ]
-
-            if missing_columns:
-
-                st.error(
-                    "Missing required Excel columns: "
-                    + ", ".join(missing_columns)
-                )
-
-                st.stop()
-
-            # Keep only required columns.
-            df = df[
-                required_columns
-            ].copy()
-
-            # -------------------------------------------
-            # Roll Number Cleaning
-            # -------------------------------------------
-
-            df["Roll Number"] = (
-                df["Roll Number"]
-                .astype(str)
-                .str.strip()
-                .str.replace(
-                    ".0",
-                    "",
-                    regex=False
-                )
-            )
-
-            df["Student Name"] = (
-                df["Student Name"]
-                .fillna("")
-                .astype(str)
-                .str.strip()
-            )
-
-            # -------------------------------------------
-            # Blank Student Validation
-            # -------------------------------------------
-
-            invalid_identity = df[
-                (df["Roll Number"] == "")
-                |
-                (df["Student Name"] == "")
-                |
-                (df["Roll Number"].str.lower() == "nan")
-            ]
-
-            if not invalid_identity.empty:
-
-                st.error(
-                    f"{len(invalid_identity)} row(s) have "
-                    "invalid Roll Number or Student Name."
-                )
-
-                st.stop()
-
-            # -------------------------------------------
-            # Numeric Validation
-            # -------------------------------------------
-
-            numeric_columns = [
-                "CE",
-                "S1",
-                "S2"
-            ]
-
-            if course_type == "Theory + Practical":
-
-                numeric_columns.extend(
-                    [
-                        "Record Work",
-                        "Mid 1",
-                        "Mid 2"
-                    ]
-                )
-
-            for column in numeric_columns:
-
-                df[column] = pd.to_numeric(
-                    df[column],
-                    errors="coerce"
-                )
-
-                if df[column].isna().any():
-
-                    bad_rows = int(
-                        df[column].isna().sum()
-                    )
-
-                    st.error(
-                        f"{bad_rows} row(s) have invalid "
-                        f"or blank marks in '{column}'."
-                    )
-
-                    st.stop()
-
-            # -------------------------------------------
-            # Range Validation
-            # -------------------------------------------
-
-            ranges = {
-                "CE": float(course["ce_max"]),
-                "S1": float(course["s1_max"]),
-                "S2": float(course["s2_max"])
-            }
-
-            if course_type == "Theory + Practical":
-
-                ranges.update(
-                    {
-                        "Record Work": 60.0,
-                        "Mid 1": 20.0,
-                        "Mid 2": 20.0
-                    }
-                )
-
-            invalid_range_rows = set()
-
-            for column, maximum in ranges.items():
-
-                bad = df[
-                    (df[column] < 0)
-                    |
-                    (df[column] > maximum)
-                ]
-
-                invalid_range_rows.update(
-                    bad.index.tolist()
-                )
-
-            if invalid_range_rows:
-
-                st.error(
-                    f"{len(invalid_range_rows)} row(s) contain "
-                    "marks outside the allowed range."
-                )
-
-                st.stop()
-
-            # -------------------------------------------
-            # Duplicate Roll Numbers Inside Excel
-            # -------------------------------------------
-
-            excel_duplicates = (
-                df[
-                    df["Roll Number"].duplicated(
-                        keep=False
-                    )
-                ]["Roll Number"]
-                .unique()
-                .tolist()
-            )
-
-            if excel_duplicates:
-
-                st.error(
-                    "Duplicate Roll Numbers found inside "
-                    "the uploaded Excel file:"
-                )
-
-                st.write(
-                    sorted(excel_duplicates)
-                )
-
-                st.stop()
-
-            st.success(
-                f"{len(df)} row(s) loaded."
-            )
-
-            st.success(
-                "Excel data passed validation."
-            )
-
-            # -------------------------------------------
-            # Existing Database Roll Numbers
-            # -------------------------------------------
-
-            existing_df = fetch_dataframe(
-                """
-                SELECT student_id
-                FROM marks
-                WHERE course_id=?
-                """,
-                (
-                    course["id"],
-                )
-            )
-
-            existing_roll_numbers = set(
-                existing_df["student_id"]
-                .astype(str)
-                .str.strip()
-                .tolist()
-            )
-
-            upload_roll_numbers = set(
-                df["Roll Number"]
-                .tolist()
-            )
-
-            duplicate_database = (
-                upload_roll_numbers
-                & existing_roll_numbers
-            )
-
-            new_roll_numbers = (
-                upload_roll_numbers
-                - existing_roll_numbers
-            )
-
-            # -------------------------------------------
-            # Duplicate Display
-            # -------------------------------------------
-
-            if duplicate_database:
-
-                if course_type == "Theory + Practical":
-
-                    st.warning(
-                        f"{len(duplicate_database)} student(s) "
-                        "already exist. Their Practical marks "
-                        "will be updated."
-                    )
-
-                else:
-
-                    st.warning(
-                        f"{len(duplicate_database)} student(s) "
-                        "already exist and will be skipped."
-                    )
-
-            st.info(
-                f"{len(new_roll_numbers)} new student(s) "
-                "are ready to import."
-            )
-
-            # -------------------------------------------
-            # Preview
-            # -------------------------------------------
-
-            st.subheader(
-                "Preview"
-            )
-
-            st.dataframe(
-                df,
-                use_container_width=True,
-                hide_index=True
-            )
-
-            # -------------------------------------------
-            # Import
-            # -------------------------------------------
-
-            if st.button(
-                "⬆️ Import Student Marks",
-                type="primary"
-            ):
-
-                imported = 0
-                updated = 0
-                skipped = 0
-
-                try:
-
-                    for _, row in df.iterrows():
-
-                        roll = str(
-                            row["Roll Number"]
-                        ).strip()
-
-                        name = str(
-                            row["Student Name"]
-                        ).strip()
-
-                        existing = fetch_one(
+                        cur.execute(
                             """
-                            SELECT id
-                            FROM marks
-                            WHERE course_id=?
-                            AND student_id=?
-                            """,
-                            (
-                                course["id"],
-                                roll
-                            )
-                        )
-
-                        if existing is not None:
-
-                            if course_type == "Theory + Practical":
-
-                                execute_query(
-                                    """
-                                    UPDATE marks
-                                    SET
-                                        student_name=?,
-                                        ce=?,
-                                        s1=?,
-                                        s2=?,
-                                        record_work=?,
-                                        practical_mid1=?,
-                                        practical_mid2=?
-                                    WHERE course_id=?
-                                    AND student_id=?
-                                    """,
-                                    (
-                                        name,
-                                        float(row["CE"]),
-                                        float(row["S1"]),
-                                        float(row["S2"]),
-                                        float(row["Record Work"]),
-                                        float(row["Mid 1"]),
-                                        float(row["Mid 2"]),
-                                        course["id"],
-                                        roll
-                                    )
-                                )
-
-                                updated += 1
-
-                            else:
-
-                                skipped += 1
-
-                            continue
-
-                        execute_query(
-                            """
-                            INSERT INTO marks
-                            (
+                            INSERT INTO marks(
                                 course_id,
                                 student_id,
                                 student_name,
                                 ce,
                                 s1,
                                 s2,
+                                ce_grade,
                                 record_work,
-                                practical_mid1,
-                                practical_mid2
+                                mid1,
+                                mid2,
+                                continuous_evaluation
                             )
-                            VALUES
-                            (
-                                ?,?,?,?,?,?,?,?,?
-                            )
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             """,
                             (
-                                course["id"],
-                                roll,
-                                name,
-                                float(row["CE"]),
-                                float(row["S1"]),
-                                float(row["S2"]),
-                                (
-                                    float(row["Record Work"])
-                                    if course_type
-                                    == "Theory + Practical"
-                                    else 0.0
-                                ),
-                                (
-                                    float(row["Mid 1"])
-                                    if course_type
-                                    == "Theory + Practical"
-                                    else 0.0
-                                ),
-                                (
-                                    float(row["Mid 2"])
-                                    if course_type
-                                    == "Theory + Practical"
-                                    else 0.0
-                                )
-                            )
+                                course_id,
+                                record["student_id"],
+                                record["student_name"],
+                                record["ce"],
+                                record["s1"],
+                                record["s2"],
+                                record["ce_grade"],
+                                record["record_work"],
+                                record["mid1"],
+                                record["mid2"],
+                                record["continuous_evaluation"],
+                            ),
                         )
 
-                        imported += 1
+                conn.commit()
+                conn.close()
 
-                    st.success(
-                        "Student marks imported successfully."
-                    )
+                st.success(
+                    f"{len(prepared_rows)} student mark record(s) saved successfully."
+                )
 
-                    st.write(
-                        f"New students imported: {imported}"
-                    )
+            except sqlite3.Error as exc:
 
-                    if course_type == "Theory + Practical":
-
-                        st.write(
-                            f"Existing students updated: {updated}"
-                        )
-
-                    else:
-
-                        st.write(
-                            f"Existing students skipped: {skipped}"
-                        )
-
-                except Exception as e:
-
-                    st.error(
-                        "Unable to import student marks."
-                    )
-
-                    st.exception(e)
+                st.error(
+                    "Database error while saving marks."
+                )
+                st.exception(exc)
 
 
-        except Exception as e:
-
-            st.error(
-                "Unable to process the uploaded Excel file."
-            )
-
-            st.exception(e)
-# =======================================================
-# SAVED STUDENTS
-# =======================================================
+# ------------------------------------------------------------
+# Current Marks
+# ------------------------------------------------------------
 
 st.divider()
+st.subheader("Current Student Marks")
 
-st.subheader(
-    "### Student Records"
-)
-
-students = fetch_dataframe(
+current_marks = fetch_all(
     """
     SELECT
-        id,
         student_id,
         student_name,
+        ce_grade,
         ce,
         s1,
         s2,
         record_work,
-        practical_mid1,
-        practical_mid2
+        mid1,
+        mid2,
+        continuous_evaluation
     FROM marks
     WHERE course_id=?
     ORDER BY student_id
     """,
-    (
-        course["id"],
-    )
+    (course_id,),
 )
 
-if students.empty:
+if current_marks:
 
-    st.info(
-        "No student records found."
+    display_rows = []
+
+    for row in current_marks:
+
+        item = {
+            "Roll Number": row["student_id"],
+            "Student Name": row["student_name"],
+        }
+
+        if course_type in {
+            "Theory",
+            "Theory + Practical",
+        }:
+            item["CE Grade"] = row["ce_grade"] or ""
+            item["CE Mark (/25)"] = row["ce"]
+
+            item["S1"] = row["s1"]
+            item["S2"] = row["s2"]
+
+        if course_type == "Theory + Practical":
+            item["Record Work (/60)"] = row["record_work"]
+            item["Mid 1 (/20)"] = row["mid1"]
+            item["Mid 2 (/20)"] = row["mid2"]
+
+        if course_type in {
+            "Capstone Project",
+            "Internship",
+        }:
+            maximum = (
+                100
+                if course_type == "Capstone Project"
+                else 50
+            )
+            item[
+                f"Continuous Evaluation (/{maximum})"
+            ] = row["continuous_evaluation"]
+
+        display_rows.append(item)
+
+    st.dataframe(
+        display_rows,
+        use_container_width=True,
+        hide_index=True,
     )
 
 else:
 
-    students["Theory Total"] = (
-        students["ce"]
-        + students["s1"]
-        + students["s2"]
-    )
-
-    if course_type == "Theory + Practical":
-
-        students["Practical Total"] = (
-            students["record_work"]
-            + students["practical_mid1"]
-            + students["practical_mid2"]
-        )
-
-        display = students[
-            [
-                "student_id",
-                "student_name",
-                "ce",
-                "s1",
-                "s2",
-                "Theory Total",
-                "record_work",
-                "practical_mid1",
-                "practical_mid2",
-                "Practical Total"
-            ]
-        ].copy()
-
-        display.columns = [
-            "Roll No",
-            "Student Name",
-            "CE",
-            "S1",
-            "S2",
-            "Theory Total",
-            "Record Work",
-            "Practical Mid 1",
-            "Practical Mid 2",
-            "Practical Total"
-        ]
-
-    else:
-
-        display = students[
-            [
-                "student_id",
-                "student_name",
-                "ce",
-                "s1",
-                "s2",
-                "Theory Total"
-            ]
-        ].copy()
-
-        display.columns = [
-            "Roll No",
-            "Student Name",
-            "CE",
-            "S1",
-            "S2",
-            "Total"
-        ]
-
-    st.dataframe(
-        display,
-        use_container_width=True,
-        hide_index=True
+    st.info(
+        "No student marks have been entered for this Active Course."
     )
 
 
-# =======================================================
-# DELETE STUDENT
-# =======================================================
-
-if not students.empty:
-
-    st.divider()
-
-    st.subheader(
-        "Delete Student"
-    )
-
-    student_options = (
-        students["student_id"].astype(str)
-        + " - "
-        + students["student_name"].astype(str)
-    )
-
-    option = st.selectbox(
-        "Select Student",
-        student_options
-    )
-
-    if st.button(
-        "🗑 Delete Student"
-    ):
-
-        selected = students[
-            student_options == option
-        ]
-
-        execute_query(
-            """
-            DELETE FROM marks
-            WHERE id=?
-            """,
-            (
-                int(
-                    selected.iloc[0]["id"]
-                ),
-            )
-        )
-
-        st.success(
-            "Student deleted successfully."
-        )
-
-        st.rerun()
+st.caption(
+    "STEP 7 handles assessment data entry and CE grade conversion only. "
+    "CO attainment and PO attainment calculations are not performed here."
+)

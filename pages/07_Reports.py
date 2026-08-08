@@ -199,6 +199,77 @@ else:
 
 
 # =========================================================
+# LOAD CO-PSO MAPPING
+# =========================================================
+
+pso_mapping_df = fetch_dataframe(
+    """
+    SELECT
+        co_no,
+        pso_no,
+        mapping_level
+    FROM pso_mapping
+    WHERE course_id=?
+    ORDER BY
+        CAST(REPLACE(UPPER(co_no), 'CO', '') AS INTEGER),
+        CAST(REPLACE(UPPER(pso_no), 'PSO', '') AS INTEGER)
+    """,
+    (course_id,)
+)
+
+if not pso_mapping_df.empty:
+    pso_mapping_df["co_no"] = (
+        pso_mapping_df["co_no"].astype(str).str.strip().str.upper()
+    )
+    pso_mapping_df["pso_no"] = (
+        pso_mapping_df["pso_no"].astype(str).str.strip().str.upper()
+    )
+    pso_mapping_df["mapping_level"] = pd.to_numeric(
+        pso_mapping_df["mapping_level"],
+        errors="coerce"
+    ).fillna(0).astype(int)
+else:
+    pso_mapping_df = pd.DataFrame(
+        columns=["co_no", "pso_no", "mapping_level"]
+    )
+
+
+# =========================================================
+# LOAD PSO ATTAINMENT
+# =========================================================
+
+pso_df = fetch_dataframe(
+    """
+    SELECT
+        pso_no,
+        attainment
+    FROM pso_attainment
+    WHERE course_id=?
+    ORDER BY
+        CAST(REPLACE(UPPER(pso_no), 'PSO', '') AS INTEGER)
+    """,
+    (course_id,)
+)
+
+if not pso_df.empty:
+    pso_df["PSO"] = (
+        pso_df["pso_no"].astype(str).str.strip().str.upper().apply(
+            lambda x: x if x.startswith("PSO") else f"PSO{x}"
+        )
+    )
+    pso_report = pd.DataFrame({
+        "PSO": pso_df["PSO"],
+        "PSO Attainment (%)": pd.to_numeric(
+            pso_df["attainment"], errors="coerce"
+        ).fillna(0).round(2),
+    })
+else:
+    pso_report = pd.DataFrame(
+        columns=["PSO", "PSO Attainment (%)"]
+    )
+
+
+# =========================================================
 # LOAD PO ATTAINMENT
 # =========================================================
 
@@ -333,6 +404,33 @@ else:
 
 
 # =========================================================
+# CO-PSO MATRIX
+# =========================================================
+
+if not pso_mapping_df.empty:
+    pso_matrix_df = pso_mapping_df.pivot_table(
+        index="co_no",
+        columns="pso_no",
+        values="mapping_level",
+        aggfunc="max",
+        fill_value=0
+    )
+
+    pso_matrix_df.index = pso_matrix_df.index.map(
+        lambda x: x if str(x).startswith("CO") else f"CO{x}"
+    )
+
+    pso_matrix_df.columns = pso_matrix_df.columns.map(
+        lambda x: x if str(x).startswith("PSO") else f"PSO{x}"
+    )
+
+    pso_matrix_df = pso_matrix_df.reset_index()
+    pso_matrix_df = pso_matrix_df.rename(columns={"co_no": "CO"})
+else:
+    pso_matrix_df = pd.DataFrame(columns=["CO"])
+
+
+# =========================================================
 # REPORT SELECTOR
 # =========================================================
 
@@ -346,6 +444,8 @@ report_choice = st.radio(
         "CO Attainment",
         "PO Attainment",
         "CO–PO Mapping",
+        "CO–PSO Mapping",
+        "PSO Attainment",
         "Consolidated OBE Report"
     ],
     horizontal=True,
@@ -466,6 +566,38 @@ elif report_choice == "CO–PO Mapping":
         )
 
 
+elif report_choice == "CO–PSO Mapping":
+
+    st.subheader("🔗 CO–PSO Mapping Matrix")
+
+    if pso_matrix_df.empty:
+        st.warning("No CO–PSO Mapping data is available.")
+    else:
+        st.dataframe(
+            pso_matrix_df,
+            use_container_width=True,
+            hide_index=True
+        )
+        st.caption(
+            "Mapping levels: 0 = No Mapping, "
+            "1 = Low, 2 = Moderate, 3 = High."
+        )
+
+
+elif report_choice == "PSO Attainment":
+
+    st.subheader("🎯 PSO Attainment")
+
+    if pso_report.empty:
+        st.warning("No PSO Attainment data is available.")
+    else:
+        st.dataframe(
+            pso_report,
+            use_container_width=True,
+            hide_index=True
+        )
+
+
 else:
 
     st.subheader("📊 Consolidated OBE Report")
@@ -507,6 +639,28 @@ else:
     else:
         st.dataframe(
             matrix_df,
+            use_container_width=True,
+            hide_index=True
+        )
+
+    st.subheader("CO–PSO Mapping")
+
+    if pso_matrix_df.empty:
+        st.info("No CO–PSO Mapping data available.")
+    else:
+        st.dataframe(
+            pso_matrix_df,
+            use_container_width=True,
+            hide_index=True
+        )
+
+    st.subheader("PSO Attainment")
+
+    if pso_report.empty:
+        st.info("No PSO Attainment data available.")
+    else:
+        st.dataframe(
+            pso_report,
             use_container_width=True,
             hide_index=True
         )
@@ -606,6 +760,18 @@ def create_excel_report():
             index=False
         )
 
+        pso_matrix_df.to_excel(
+            writer,
+            sheet_name="CO-PSO Mapping",
+            index=False
+        )
+
+        pso_report.to_excel(
+            writer,
+            sheet_name="PSO Attainment",
+            index=False
+        )
+
         workbook = writer.book
 
         for worksheet in workbook.worksheets:
@@ -679,7 +845,7 @@ def create_pdf_report():
 
     from reportlab.lib import colors
     from reportlab.lib.enums import TA_CENTER
-    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import (
         getSampleStyleSheet,
         ParagraphStyle
@@ -698,7 +864,7 @@ def create_pdf_report():
 
     document = SimpleDocTemplate(
         output,
-        pagesize=landscape(A4),
+        pagesize=A4,
         rightMargin=12 * mm,
         leftMargin=12 * mm,
         topMargin=12 * mm,
@@ -923,6 +1089,11 @@ def create_pdf_report():
 
         mapping_table = Table(
             mapping_data,
+            colWidths=[
+                16 * mm
+            ] + [
+                12.8 * mm
+            ] * (len(mapping_headers) - 1),
             repeatRows=1
         )
 
@@ -973,10 +1144,144 @@ def create_pdf_report():
         PageBreak()
     )
 
+    # CO-PSO Mapping
+    story.append(
+        Paragraph(
+            "3. CO–PSO Mapping",
+            heading_style
+        )
+    )
+
+    if not pso_matrix_df.empty:
+
+        pso_mapping_headers = list(pso_matrix_df.columns)
+
+        pso_mapping_data = [pso_mapping_headers]
+
+        for row in pso_matrix_df.itertuples(
+            index=False,
+            name=None
+        ):
+            pso_mapping_data.append(
+                [str(value) for value in row]
+            )
+
+        pso_mapping_table = Table(
+            pso_mapping_data,
+            colWidths=[
+                22 * mm
+            ] + [
+                35 * mm
+            ] * (len(pso_mapping_headers) - 1),
+            repeatRows=1
+        )
+
+        pso_mapping_table.setStyle(
+            TableStyle(
+                [
+                    (
+                        "BACKGROUND",
+                        (0, 0),
+                        (-1, 0),
+                        colors.lightgrey
+                    ),
+                    (
+                        "GRID",
+                        (0, 0),
+                        (-1, -1),
+                        0.4,
+                        colors.grey
+                    ),
+                    (
+                        "FONTNAME",
+                        (0, 0),
+                        (-1, 0),
+                        "Helvetica-Bold"
+                    ),
+                    (
+                        "ALIGN",
+                        (1, 1),
+                        (-1, -1),
+                        "CENTER"
+                    )
+                ]
+            )
+        )
+
+        story.append(pso_mapping_table)
+
+    else:
+
+        story.append(
+            Paragraph(
+                "No CO–PSO mapping data available.",
+                body_style
+            )
+        )
+
+    story.append(Spacer(1, 8 * mm))
+
+    # PSO Attainment
+    story.append(
+        Paragraph(
+            "4. PSO Attainment",
+            heading_style
+        )
+    )
+
+    pso_data = [["PSO", "Attainment (%)"]]
+
+    for _, row in pso_report.iterrows():
+        pso_data.append(
+            [
+                str(row["PSO"]),
+                f"{float(row['PSO Attainment (%)']):.2f}"
+            ]
+        )
+
+    if len(pso_data) == 1:
+        pso_data.append(["No data", "-"])
+
+    pso_table = Table(
+        pso_data,
+        colWidths=[45 * mm, 55 * mm],
+        repeatRows=1
+    )
+
+    pso_table.setStyle(
+        TableStyle(
+            [
+                (
+                    "BACKGROUND",
+                    (0, 0),
+                    (-1, 0),
+                    colors.lightgrey
+                ),
+                (
+                    "GRID",
+                    (0, 0),
+                    (-1, -1),
+                    0.5,
+                    colors.grey
+                ),
+                (
+                    "FONTNAME",
+                    (0, 0),
+                    (-1, 0),
+                    "Helvetica-Bold"
+                )
+            ]
+        )
+    )
+
+    story.append(pso_table)
+
+    story.append(Spacer(1, 8 * mm))
+
     # PO Attainment
     story.append(
         Paragraph(
-            "3. PO Attainment",
+            "5. PO Attainment",
             heading_style
         )
     )
@@ -1130,7 +1435,9 @@ st.subheader("✅ Report Data Status")
 status_items = {
     "CO Attainment": not co_report.empty,
     "CO–PO Mapping": not matrix_df.empty,
-    "PO Attainment": not po_report.empty
+    "CO–PSO Mapping": not pso_matrix_df.empty,
+    "PO Attainment": not po_report.empty,
+    "PSO Attainment": not pso_report.empty
 }
 
 for name, available in status_items.items():
