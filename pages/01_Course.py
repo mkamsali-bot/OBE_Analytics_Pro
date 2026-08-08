@@ -1,471 +1,962 @@
+"""
+OBE Analytics Pro v1.3
+01_Course.py
+STEP 2 - COURSE ENTRY
 
-# OBE Analytics Pro v1.3
-# 01_Course.py
-# STEP 1 - ACTIVE COURSE FIX
+Uses the existing root-level database.py architecture.
+
+Course fields:
+- Course Code
+- Course Name
+- Faculty
+- Semester
+- Academic Year
+- CE Maximum
+- S1 Maximum
+- S2 Maximum
+- Use Indirect Attainment
+- Direct Weight
+- Indirect Weight
+
+The selected course is also stored as the application's Active Course.
+"""
 
 from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Optional
 
 import streamlit as st
 
+from database import (
+    DB_NAME,
+    execute_query,
+    fetch_all,
+    fetch_one,
+    get_connection,
+    initialize_database,
+    set_active_course,
+)
+
+
+# ------------------------------------------------------------
+# Page Configuration
+# ------------------------------------------------------------
 
 st.set_page_config(
-    page_title="OBE Analytics Pro – Course",
+    page_title="OBE Analytics Pro - Course",
     page_icon="🎓",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+# ------------------------------------------------------------
+# Database Initialization
+# ------------------------------------------------------------
 
-DATABASE_CANDIDATES = [
-    BASE_DIR / "database" / "obe.db",
-    BASE_DIR / "database" / "obe_analytics.db",
-    BASE_DIR / "database" / "obe_analytics_pro.db",
-    BASE_DIR / "obe.db",
-    BASE_DIR / "obe_analytics.db",
-    BASE_DIR / "data" / "obe.db",
-    BASE_DIR / "data" / "obe_analytics.db",
-]
+initialize_database()
 
 
-def get_database_path() -> Path:
-    for path in DATABASE_CANDIDATES:
-        if path.exists():
-            return path
-    return BASE_DIR / "database" / "obe.db"
-
-
-@st.cache_resource
-def get_connection(db_path: str) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
-def get_tables(conn: sqlite3.Connection) -> List[str]:
-    sql = (
-        "SELECT name FROM sqlite_master "
-        "WHERE type = 'table' AND name NOT LIKE 'sqlite_%' "
-        "ORDER BY name"
-    )
-    rows = conn.execute(sql).fetchall()
-    return [str(row["name"]) for row in rows]
-
-
-def get_columns(conn: sqlite3.Connection, table_name: str) -> List[str]:
-    rows = conn.execute(
-        f'PRAGMA table_info("{table_name}")'
-    ).fetchall()
-    return [str(row["name"]) for row in rows]
-
-
-def find_course_table(conn: sqlite3.Connection) -> Optional[str]:
-    tables = get_tables(conn)
-    lower_map = {table.lower(): table for table in tables}
-
-    for name in (
-        "course",
-        "courses",
-        "course_master",
-        "course_master_data",
-    ):
-        if name in lower_map:
-            return lower_map[name]
-
-    for table in tables:
-        columns = {c.lower() for c in get_columns(conn, table)}
-        if (
-            ("course_code" in columns or "code" in columns)
-            and ("course_name" in columns or "name" in columns)
-        ):
-            return table
-
-    return None
-
-
-def find_column(
-    columns: Sequence[str],
-    candidates: Sequence[str],
-) -> Optional[str]:
-    lower_map = {column.lower(): column for column in columns}
-    for candidate in candidates:
-        if candidate.lower() in lower_map:
-            return lower_map[candidate.lower()]
-    return None
-
-
-def normalize_active_value(value: Any) -> bool:
-    if value is None:
-        return True
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return value != 0
-
-    text = str(value).strip().lower()
-
-    if text in {
-        "1", "true", "yes", "y", "active",
-        "enabled", "current"
-    }:
-        return True
-
-    if text in {
-        "0", "false", "no", "n", "inactive",
-        "disabled", "closed"
-    }:
-        return False
-
-    return True
-
-
-def course_display_label(course: Dict[str, Any]) -> str:
-    code = (
-        course.get("course_code")
-        or course.get("code")
-        or course.get("course_no")
-        or ""
-    )
-
-    name = (
-        course.get("course_name")
-        or course.get("name")
-        or course.get("course_title")
-        or ""
-    )
-
-    semester = (
-        course.get("semester")
-        or course.get("term")
-        or ""
-    )
-
-    parts = [
-        str(value).strip()
-        for value in (code, name)
-        if str(value).strip()
+def ensure_course_type_column() -> None:
+    """Add course_type to existing course tables without losing data."""
+    conn = get_connection()
+    columns = [
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(course)").fetchall()
     ]
 
-    label = " – ".join(parts)
+    if "course_type" not in columns:
+        conn.execute(
+            """
+            ALTER TABLE course
+            ADD COLUMN course_type TEXT DEFAULT 'Theory'
+            """
+        )
+        conn.commit()
 
-    if semester:
-        label = f"{label} | {semester}" if label else str(semester)
-
-    return label or f"Course ID: {course.get('__course_id__', 'Unknown')}"
+    conn.close()
 
 
-def load_courses(
-    conn: sqlite3.Connection,
-    table_name: str,
-) -> Tuple[List[Dict[str, Any]], Dict[str, str]]:
+ensure_course_type_column()
 
-    columns = get_columns(conn, table_name)
 
-    id_col = find_column(
-        columns,
-        ["id", "course_id"],
+# ------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------
+
+def get_courses():
+    return fetch_all(
+        """
+        SELECT
+            id,
+            course_code,
+            course_name,
+            course_type,
+            faculty,
+            semester,
+            academic_year,
+            ce_max,
+            s1_max,
+            s2_max,
+            use_indirect,
+            direct_weight,
+            indirect_weight
+        FROM course
+        ORDER BY academic_year DESC, course_code
+        """
     )
 
-    code_col = find_column(
-        columns,
-        ["course_code", "code", "course_no", "course_number"],
+
+def get_course(course_id: int):
+    return fetch_one(
+        """
+        SELECT
+            id,
+            course_code,
+            course_name,
+            course_type,
+            faculty,
+            semester,
+            academic_year,
+            ce_max,
+            s1_max,
+            s2_max,
+            use_indirect,
+            direct_weight,
+            indirect_weight
+        FROM course
+        WHERE id=?
+        """,
+        (course_id,),
     )
 
-    name_col = find_column(
-        columns,
-        ["course_name", "name", "course_title", "title"],
+
+def get_stored_active_course_id() -> Optional[int]:
+    row = fetch_one(
+        """
+        SELECT active_course_id
+        FROM settings
+        WHERE id=1
+        """
     )
 
-    semester_col = find_column(
-        columns,
-        ["semester", "term"],
+    if row is None:
+        return None
+
+    value = row["active_course_id"]
+
+    if value is None:
+        return None
+
+    return int(value)
+
+
+def course_label(row: Any) -> str:
+    code = row["course_code"] or ""
+    name = row["course_name"] or ""
+    year = row["academic_year"] or ""
+
+    label = f"{code} - {name}"
+
+    if year:
+        label += f" | {year}"
+
+    return label
+
+
+def save_course(
+    course_code: str,
+    course_name: str,
+    course_type: str,
+    faculty: str,
+    semester: str,
+    academic_year: str,
+    ce_max: int,
+    s1_max: int,
+    s2_max: int,
+    use_indirect: int,
+    direct_weight: float,
+    indirect_weight: float,
+) -> int:
+
+    return_id = fetch_one(
+        "SELECT id FROM course WHERE course_code=?",
+        (course_code,),
     )
 
-    academic_year_col = find_column(
-        columns,
-        ["academic_year", "ay", "year"],
-    )
-
-    active_col = find_column(
-        columns,
-        ["is_active", "active", "status", "course_status"],
-    )
-
-    if id_col is None:
-        id_expression = "rowid AS __course_id__"
-    else:
-        id_expression = f'"{id_col}" AS __course_id__'
-
-    order_column = code_col or name_col or id_col or "rowid"
-
-    query = (
-        f'SELECT {id_expression}, * '
-        f'FROM "{table_name}" '
-        f'ORDER BY "{order_column}"'
-    )
-
-    rows = conn.execute(query).fetchall()
-
-    courses: List[Dict[str, Any]] = []
-
-    for row in rows:
-        raw = dict(row)
-
-        if active_col is not None:
-            if not normalize_active_value(raw.get(active_col)):
-                continue
-
-        record = dict(raw)
-
-        record["course_code"] = (
-            raw.get(code_col) if code_col else ""
+    if return_id is not None:
+        raise ValueError(
+            f"Course Code '{course_code}' already exists."
         )
 
-        record["course_name"] = (
-            raw.get(name_col) if name_col else ""
+    course_id = None
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        INSERT INTO course(
+            course_code,
+            course_name,
+            course_type,
+            faculty,
+            semester,
+            academic_year,
+            ce_max,
+            s1_max,
+            s2_max,
+            use_indirect,
+            direct_weight,
+            indirect_weight
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            course_code,
+            course_name,
+            course_type,
+            faculty,
+            semester,
+            academic_year,
+            ce_max,
+            s1_max,
+            s2_max,
+            use_indirect,
+            direct_weight,
+            indirect_weight,
+        ),
+    )
+
+    course_id = cur.lastrowid
+
+    conn.commit()
+    conn.close()
+
+    return int(course_id)
+
+
+def update_course(
+    course_id: int,
+    course_code: str,
+    course_name: str,
+    course_type: str,
+    faculty: str,
+    semester: str,
+    academic_year: str,
+    ce_max: int,
+    s1_max: int,
+    s2_max: int,
+    use_indirect: int,
+    direct_weight: float,
+    indirect_weight: float,
+) -> None:
+
+    existing = fetch_one(
+        """
+        SELECT id
+        FROM course
+        WHERE course_code=?
+          AND id<>?
+        """,
+        (course_code, course_id),
+    )
+
+    if existing is not None:
+        raise ValueError(
+            f"Course Code '{course_code}' is already used by another course."
         )
 
-        record["semester"] = (
-            raw.get(semester_col) if semester_col else ""
-        )
+    execute_query(
+        """
+        UPDATE course
+        SET
+            course_code=?,
+            course_name=?,
+            course_type=?,
+            faculty=?,
+            semester=?,
+            academic_year=?,
+            ce_max=?,
+            s1_max=?,
+            s2_max=?,
+            use_indirect=?,
+            direct_weight=?,
+            indirect_weight=?
+        WHERE id=?
+        """,
+        (
+            course_code,
+            course_name,
+            course_type,
+            faculty,
+            semester,
+            academic_year,
+            ce_max,
+            s1_max,
+            s2_max,
+            use_indirect,
+            direct_weight,
+            indirect_weight,
+            course_id,
+        ),
+    )
 
-        record["academic_year"] = (
-            raw.get(academic_year_col)
-            if academic_year_col
-            else ""
-        )
 
-        record["display_label"] = course_display_label(record)
+# ------------------------------------------------------------
+# Header
+# ------------------------------------------------------------
 
-        courses.append(record)
+st.title("🎓 Course Management")
+st.caption(
+    "OBE Analytics Pro v1.3 · STEP 2 - Course Entry"
+)
 
-    column_map = {
-        "id": id_col or "",
-        "code": code_col or "",
-        "name": name_col or "",
-        "semester": semester_col or "",
-        "academic_year": academic_year_col or "",
-        "active": active_col or "",
+
+# ------------------------------------------------------------
+# Existing Courses / Active Course
+# ------------------------------------------------------------
+
+courses = get_courses()
+
+stored_active_id = get_stored_active_course_id()
+
+if courses:
+    st.subheader("Active Course")
+
+    course_options = {
+        course_label(row): int(row["id"])
+        for row in courses
     }
 
-    return courses, column_map
+    option_labels = list(course_options.keys())
 
-
-SESSION_COURSE_ID = "active_course_id"
-SESSION_COURSE = "active_course"
-SESSION_COURSE_LABEL = "active_course_label"
-
-
-def set_active_course(course: Dict[str, Any]) -> None:
-    st.session_state[SESSION_COURSE_ID] = course.get(
-        "__course_id__"
-    )
-    st.session_state[SESSION_COURSE] = course
-    st.session_state[SESSION_COURSE_LABEL] = course.get(
-        "display_label",
-        course_display_label(course),
-    )
-
-
-def get_active_course() -> Optional[Dict[str, Any]]:
-    return st.session_state.get(SESSION_COURSE)
-
-
-def render_header() -> None:
-    st.title("🎓 Course Management")
-    st.caption(
-        "OBE Analytics Pro v1.3 · STEP 1 – Active Course Fix"
-    )
-
-
-def render_database_status(
-    db_path: Path,
-    table_name: Optional[str],
-    courses: Sequence[Dict[str, Any]],
-) -> None:
-
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-        st.metric("Database", db_path.name)
-
-    with col2:
-        st.metric("Course Table", table_name or "Not found")
-
-    with col3:
-        st.metric("Active Courses", len(courses))
-
-
-def render_active_course_banner(
-    course: Optional[Dict[str, Any]]
-) -> None:
-
-    if not course:
-        st.info("No active course is selected.")
-        return
-
-    label = course.get(
-        "display_label",
-        course_display_label(course),
-    )
-
-    st.success(f"**Active Course:** {label}")
-
-
-def render_course_details(
-    course: Dict[str, Any]
-) -> None:
-
-    st.subheader("Selected Course")
-
-    preferred_fields = [
-        ("Course Code", "course_code"),
-        ("Course Name", "course_name"),
-        ("Semester", "semester"),
-        ("Academic Year", "academic_year"),
-    ]
-
-    values = []
-
-    for title, key in preferred_fields:
-        value = course.get(key)
-        if value not in (None, ""):
-            values.append((title, value))
-
-    if values:
-        cols = st.columns(min(4, len(values)))
-
-        for index, (title, value) in enumerate(values):
-            with cols[index % len(cols)]:
-                st.metric(title, str(value))
-
-    with st.expander("Course Record", expanded=False):
-        visible = {
-            key: value
-            for key, value in course.items()
-            if not key.startswith("__")
-            and key != "display_label"
-        }
-        st.json(visible)
-
-
-def render_course_selector(
-    courses: Sequence[Dict[str, Any]]
-) -> None:
-
-    if not courses:
-        st.warning(
-            "No active courses were found. "
-            "Please create or activate a course "
-            "in the database before continuing."
-        )
-        return
-
-    labels = [course["display_label"] for course in courses]
-
-    existing_id = st.session_state.get(SESSION_COURSE_ID)
     default_index = 0
 
-    if existing_id is not None:
-        for index, course in enumerate(courses):
-            if course.get("__course_id__") == existing_id:
+    if stored_active_id is not None:
+        for index, label in enumerate(option_labels):
+            if course_options[label] == stored_active_id:
                 default_index = index
                 break
 
     selected_label = st.selectbox(
         "Select Active Course",
-        labels,
+        option_labels,
         index=default_index,
-        key="course_selector_v13",
+        key="active_course_selector_v13",
     )
 
-    selected_course = next(
-        (
-            course
-            for course in courses
-            if course["display_label"] == selected_label
-        ),
-        None,
-    )
+    selected_course_id = course_options[selected_label]
 
-    if selected_course is not None:
-        set_active_course(selected_course)
-
-    active_course = get_active_course()
-
-    st.divider()
-    render_active_course_banner(active_course)
-
-    if active_course:
-        render_course_details(active_course)
-
-
-def main() -> None:
-    render_header()
-
-    db_path = get_database_path()
-
-    try:
-        db_path.parent.mkdir(
-            parents=True,
-            exist_ok=True,
-        )
-        conn = get_connection(str(db_path))
-
-    except Exception as exc:
-        st.error("Unable to open the OBE database.")
-        st.exception(exc)
-        return
-
-    table_name = find_course_table(conn)
-
-    if table_name is None:
-        st.error(
-            "The Course table was not found in the current database."
-        )
-
-        st.info(
-            "Initialize the OBE Analytics Pro database first, "
-            "then reopen this page."
-        )
-
-        with st.expander("Database diagnostic information"):
-            st.write("Database path:", str(db_path))
-            st.write("Tables detected:", get_tables(conn))
-
-        return
-
-    try:
-        courses, column_map = load_courses(
-            conn,
-            table_name,
-        )
-
-    except Exception as exc:
-        st.error("The Course table could not be read.")
-        st.exception(exc)
-        return
-
-    render_database_status(
-        db_path,
-        table_name,
-        courses,
-    )
-
-    with st.expander(
-        "Detected Course Schema",
-        expanded=False,
+    if st.button(
+        "Set as Active Course",
+        type="primary",
+        key="set_active_course_v13",
     ):
-        st.json(column_map)
+        set_active_course(selected_course_id)
+        st.session_state["active_course_id"] = selected_course_id
+        st.success(
+            f"Active Course set to: {selected_label}"
+        )
+        st.rerun()
 
+    current_active_id = get_stored_active_course_id()
+
+    if current_active_id is not None:
+        active_course = get_course(current_active_id)
+
+        if active_course:
+            st.success(
+                "Active Course: "
+                + course_label(active_course)
+            )
+
+st.divider()
+
+
+# ------------------------------------------------------------
+# Course Entry / Edit
+# ------------------------------------------------------------
+
+st.subheader("Course Details")
+
+mode = st.radio(
+    "Course Operation",
+    ["New Course", "Edit Existing Course"],
+    horizontal=True,
+    key="course_operation_v13",
+)
+
+
+if mode == "Edit Existing Course" and courses:
+
+    edit_options = {
+        course_label(row): int(row["id"])
+        for row in courses
+    }
+
+    edit_label = st.selectbox(
+        "Select Course to Edit",
+        list(edit_options.keys()),
+        key="edit_course_selector_v13",
+    )
+
+    edit_id = edit_options[edit_label]
+    existing = get_course(edit_id)
+
+else:
+    edit_id = None
+    existing = None
+
+
+with st.form(
+    "course_entry_form_v13",
+    clear_on_submit=False,
+):
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        course_code = st.text_input(
+            "Course Code *",
+            value=(
+                existing["course_code"]
+                if existing
+                else ""
+            ),
+            placeholder="Example: ECE301",
+        )
+
+        course_name = st.text_input(
+            "Course Name *",
+            value=(
+                existing["course_name"]
+                if existing
+                else ""
+            ),
+            placeholder="Example: Digital Signal Processing",
+        )
+
+        course_types = [
+            "Theory",
+            "Theory + Practical",
+            "Capstone Project",
+            "Internship",
+        ]
+
+        existing_course_type = (
+            existing["course_type"]
+            if existing and existing["course_type"]
+            else "Theory"
+        )
+
+        course_type = st.selectbox(
+            "Course Type *",
+            course_types,
+            index=(
+                course_types.index(existing_course_type)
+                if existing_course_type in course_types
+                else 0
+            ),
+        )
+
+        faculty = st.text_input(
+            "Faculty / Course Instructor",
+            value=(
+                existing["faculty"] or ""
+                if existing
+                else ""
+            ),
+            placeholder="Faculty name",
+        )
+
+        semester = st.text_input(
+            "Semester",
+            value=(
+                existing["semester"] or ""
+                if existing
+                else ""
+            ),
+            placeholder="Example: V",
+        )
+
+        academic_year = st.text_input(
+            "Academic Year *",
+            value=(
+                existing["academic_year"] or ""
+                if existing
+                else ""
+            ),
+            placeholder="Example: 2026-27",
+        )
+
+    with col2:
+
+        st.markdown("**Assessment Maximum Marks**")
+
+        ce_max = st.number_input(
+            "CE Maximum",
+            min_value=0,
+            max_value=1000,
+            value=(
+                int(existing["ce_max"])
+                if existing and existing["ce_max"] is not None
+                else 25
+            ),
+            step=1,
+        )
+
+        s1_max = st.number_input(
+            "S1 Maximum",
+            min_value=0,
+            max_value=1000,
+            value=(
+                int(existing["s1_max"])
+                if existing and existing["s1_max"] is not None
+                else 30
+            ),
+            step=1,
+        )
+
+        s2_max = st.number_input(
+            "S2 Maximum",
+            min_value=0,
+            max_value=1000,
+            value=(
+                int(existing["s2_max"])
+                if existing and existing["s2_max"] is not None
+                else 45
+            ),
+            step=1,
+        )
+
+        use_indirect = st.checkbox(
+            "Use Indirect Attainment",
+            value=(
+                bool(existing["use_indirect"])
+                if existing
+                else True
+            ),
+        )
+
+        direct_weight = st.number_input(
+            "Direct Attainment Weight (%)",
+            min_value=0.0,
+            max_value=100.0,
+            value=(
+                float(existing["direct_weight"])
+                if existing and existing["direct_weight"] is not None
+                else 80.0
+            ),
+            step=5.0,
+        )
+
+        indirect_weight = st.number_input(
+            "Indirect Attainment Weight (%)",
+            min_value=0.0,
+            max_value=100.0,
+            value=(
+                float(existing["indirect_weight"])
+                if existing and existing["indirect_weight"] is not None
+                else 20.0
+            ),
+            step=5.0,
+        )
+
+    submitted = st.form_submit_button(
+        "Update Course"
+        if existing
+        else "Create Course",
+        type="primary",
+    )
+
+
+# ------------------------------------------------------------
+# Save
+# ------------------------------------------------------------
+
+if submitted:
+
+    course_code = course_code.strip()
+    course_name = course_name.strip()
+    faculty = faculty.strip()
+    semester = semester.strip()
+    academic_year = academic_year.strip()
+
+    if not course_code:
+        st.error("Course Code is required.")
+
+    elif not course_name:
+        st.error("Course Name is required.")
+
+    elif not academic_year:
+        st.error("Academic Year is required.")
+
+    elif abs(
+        float(direct_weight)
+        + float(indirect_weight)
+        - 100.0
+    ) > 0.001:
+        st.error(
+            "Direct and Indirect Attainment weights "
+            "must total 100%."
+        )
+
+    else:
+        try:
+
+            if existing:
+
+                update_course(
+                    course_id=edit_id,
+                    course_code=course_code,
+                    course_name=course_name,
+                    course_type=course_type,
+                    faculty=faculty,
+                    semester=semester,
+                    academic_year=academic_year,
+                    ce_max=int(ce_max),
+                    s1_max=int(s1_max),
+                    s2_max=int(s2_max),
+                    use_indirect=int(use_indirect),
+                    direct_weight=float(direct_weight),
+                    indirect_weight=float(indirect_weight),
+                )
+
+                st.success(
+                    f"Course '{course_code}' updated successfully."
+                )
+
+            else:
+
+                new_course_id = save_course(
+                    course_code=course_code,
+                    course_name=course_name,
+                    course_type=course_type,
+                    faculty=faculty,
+                    semester=semester,
+                    academic_year=academic_year,
+                    ce_max=int(ce_max),
+                    s1_max=int(s1_max),
+                    s2_max=int(s2_max),
+                    use_indirect=int(use_indirect),
+                    direct_weight=float(direct_weight),
+                    indirect_weight=float(indirect_weight),
+                )
+
+                set_active_course(new_course_id)
+
+                st.session_state["active_course_id"] = (
+                    new_course_id
+                )
+
+                st.success(
+                    f"Course '{course_code}' created successfully "
+                    "and set as Active Course."
+                )
+
+            st.rerun()
+
+        except sqlite3.IntegrityError as exc:
+            st.error(
+                "The Course Code already exists or violates "
+                "a database constraint."
+            )
+            st.exception(exc)
+
+        except ValueError as exc:
+            st.error(str(exc))
+
+        except Exception as exc:
+            st.error("Unable to save the course.")
+            st.exception(exc)
+
+
+# ------------------------------------------------------------
+# Assessment Structure
+# ------------------------------------------------------------
+
+if existing:
+    display_course_type = existing["course_type"] or "Theory"
+else:
+    display_course_type = course_type
+
+if display_course_type == "Theory + Practical":
     st.divider()
-    render_course_selector(courses)
+    st.subheader("Theory + Practical Assessment Structure")
+
+    # --------------------------------------------------------
+    # Overall weighting
+    # --------------------------------------------------------
+    st.markdown("### Overall Weighting")
+
+    weight_col1, weight_col2 = st.columns(2)
+
+    with weight_col1:
+        st.metric("Theory", "70%")
+
+    with weight_col2:
+        st.metric("Practical", "30%")
+
+    # --------------------------------------------------------
+    # Theory component
+    # --------------------------------------------------------
+    st.markdown("### THEORY COMPONENT")
+
+    theory_component = [
+        {
+            "Assessment": "CE",
+            "Maximum": int(ce_max),
+        },
+        {
+            "Assessment": "S1",
+            "Maximum": int(s1_max),
+        },
+        {
+            "Assessment": "S2",
+            "Maximum": int(s2_max),
+        },
+        {
+            "Assessment": "Theory Total",
+            "Maximum": int(ce_max) + int(s1_max) + int(s2_max),
+        },
+    ]
+
+    st.dataframe(
+        theory_component,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    # --------------------------------------------------------
+    # Practical component
+    # --------------------------------------------------------
+    st.markdown("### PRACTICAL COMPONENT")
+
+    practical_component = [
+        {
+            "Assessment": "Record Work",
+            "Maximum": 60,
+        },
+        {
+            "Assessment": "Mid 1",
+            "Maximum": 20,
+        },
+        {
+            "Assessment": "Mid 2",
+            "Maximum": 20,
+        },
+        {
+            "Assessment": "Practical Total",
+            "Maximum": 100,
+        },
+    ]
+
+    st.dataframe(
+        practical_component,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    # --------------------------------------------------------
+    # Fixed practical CO distribution
+    # --------------------------------------------------------
+    st.markdown("### Fixed Practical CO Distribution")
+
+    practical_co_distribution = [
+        {
+            "Assessment": "Record Work",
+            "Maximum": 60,
+            "CO1": "20%",
+            "CO2": "20%",
+            "CO3": "20%",
+            "CO4": "20%",
+            "CO5": "20%",
+        },
+        {
+            "Assessment": "Mid 1",
+            "Maximum": 20,
+            "CO1": "50%",
+            "CO2": "50%",
+            "CO3": "—",
+            "CO4": "—",
+            "CO5": "—",
+        },
+        {
+            "Assessment": "Mid 2",
+            "Maximum": 20,
+            "CO1": "—",
+            "CO2": "—",
+            "CO3": "33.33%",
+            "CO4": "33.33%",
+            "CO5": "33.33%",
+        },
+    ]
+
+    st.dataframe(
+        practical_co_distribution,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.info(
+        "The Practical CO distribution is fixed by the system. "
+        "Faculty cannot manually change the CO allocation."
+    )
+
+    # --------------------------------------------------------
+    # Excel import structure
+    # --------------------------------------------------------
+    st.markdown("### Theory + Practical Excel Import Columns")
+
+    excel_columns = [
+        "Roll Number",
+        "Student Name",
+        "CE",
+        "S1",
+        "S2",
+        "Record Work",
+        "Mid 1",
+        "Mid 2",
+    ]
+
+    st.dataframe(
+        [{"Column": column} for column in excel_columns],
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.code(
+        "Roll Number\n"
+        "Student Name\n"
+        "CE\n"
+        "S1\n"
+        "S2\n"
+        "Record Work\n"
+        "Mid 1\n"
+        "Mid 2"
+    )
+
+elif display_course_type == "Theory":
+    st.divider()
+    st.subheader("Theory Assessment Structure")
+    st.write("CE")
+    st.write("S1")
+    st.write("S2")
+
+elif display_course_type == "Capstone Project":
+    st.divider()
+    st.subheader("Capstone Project Assessment Structure")
+
+    st.markdown("### CONTINUOUS EVALUATION")
+    st.write("Continuous Evaluation — **/100**")
+
+    st.markdown("### Fixed CO Distribution")
+
+    st.dataframe(
+        [
+            {
+                "Assessment": "Continuous Evaluation",
+                "Maximum": 100,
+                "CO Distribution": "CO1, CO2, CO3, CO4, CO5 equally",
+            }
+        ],
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.info(
+        "Capstone Project: Continuous Evaluation is 100 marks. "
+        "The 100 marks are distributed equally across CO1–CO5."
+    )
+
+    st.markdown("### Excel Import Columns")
+    st.code(
+        "Roll Number\\n"
+        "Student Name\\n"
+        "Continuous Evaluation"
+    )
+
+elif display_course_type == "Internship":
+    st.divider()
+    st.subheader("Internship Assessment Structure")
+
+    st.markdown("### CONTINUOUS EVALUATION")
+    st.write("Continuous Evaluation — **/50**")
+
+    st.markdown("### Fixed CO Distribution")
+
+    st.dataframe(
+        [
+            {
+                "Assessment": "Continuous Evaluation",
+                "Maximum": 50,
+                "CO Distribution": "CO1, CO2, CO3, CO4, CO5 equally",
+            }
+        ],
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.info(
+        "Internship: Continuous Evaluation is 50 marks. "
+        "The 50 marks are distributed equally across CO1–CO5."
+    )
+
+    st.markdown("### Excel Import Columns")
+    st.code(
+        "Roll Number\\n"
+        "Student Name\\n"
+        "Continuous Evaluation"
+    )
 
 
-if __name__ == "__main__":
-    main()
+# ------------------------------------------------------------
+# Current Course List
+# ------------------------------------------------------------
+
+st.divider()
+st.subheader("Course List")
+
+courses = get_courses()
+
+if courses:
+
+    rows = []
+
+    for row in courses:
+        rows.append(
+            {
+                "ID": row["id"],
+                "Course Code": row["course_code"],
+                "Course Name": row["course_name"],
+                "Course Type": row["course_type"] or "Theory",
+                "Faculty": row["faculty"] or "",
+                "Semester": row["semester"] or "",
+                "Academic Year": row["academic_year"] or "",
+                "CE Max": row["ce_max"],
+                "S1 Max": row["s1_max"],
+                "S2 Max": row["s2_max"],
+                "Indirect": (
+                    "Yes"
+                    if row["use_indirect"]
+                    else "No"
+                ),
+                "Direct %": row["direct_weight"],
+                "Indirect %": row["indirect_weight"],
+            }
+        )
+
+    st.dataframe(
+        rows,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+else:
+    st.info(
+        "No courses have been created yet. "
+        "Use New Course above to create the first course."
+    )

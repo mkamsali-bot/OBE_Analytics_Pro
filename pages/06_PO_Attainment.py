@@ -3,12 +3,13 @@ OBE Analytics - Simple Edition
 06_PO_Attainment.py
 
 PO Attainment:
-1. Calculates CO attainment directly from the populated co_marks table.
+1. Uses saved CO attainment from the CO Attainment module.
 2. Uses saved CO-PO mapping levels (1=Low, 2=Moderate, 3=High).
 3. Calculates Direct PO Attainment as a weighted average of CO attainment.
-4. Allows manual Indirect PO Attainment.
-5. Final PO = 80% Direct + 20% Indirect when indirect is enabled.
+4. Allows manual Course Survey / Indirect PO Attainment.
+5. Final PO = 80% Direct + 20% Indirect.
 6. Saves PO attainment to po_attainment.
+7. Calculates PSO attainment separately from CO-PSO mapping.
 """
 
 import streamlit as st
@@ -221,27 +222,28 @@ st.divider()
 st.subheader("Final CO Attainment")
 
 st.info(
-    "CO attainment is calculated directly from the saved "
-    "CO-wise marks. The current equal-distribution rule "
-    "uses 20 maximum marks for each CO."
+    "CO attainment is taken from the validated CO Attainment module. "
+    "This PO Attainment module does not recalculate CO attainment."
 )
 
+saved_co_attainment = fetch_dataframe(
+    """
+    SELECT
+        co_no,
+        attainment
+    FROM co_attainment
+    WHERE course_id=?
+    ORDER BY co_no
+    """,
+    (course_id,)
+)
 
-# Current approved distribution:
-# CE -> all 5 COs
-# S1 -> CO1, CO2
-# S2 -> CO3, CO4, CO5
-#
-# Therefore each CO has maximum 20 marks.
-
-co_maximum = {
-    1: 20.0,
-    2: 20.0,
-    3: 20.0,
-    4: 20.0,
-    5: 20.0
-}
-
+if saved_co_attainment.empty:
+    st.error(
+        "No saved CO Attainment is available. "
+        "Please calculate and save CO Attainment first."
+    )
+    st.stop()
 
 co_results = []
 
@@ -249,39 +251,27 @@ for co in cos:
 
     co_no = int(co["co_no"])
 
-    data = co_marks_df[
-        co_marks_df["co_no"].astype(str) == str(co_no)
-    ].copy()
+    matching = saved_co_attainment[
+        saved_co_attainment["co_no"].astype(str).str.upper()
+        == f"CO{co_no}"
+    ]
 
-    data["marks"] = pd.to_numeric(
-        data["marks"],
-        errors="coerce"
-    ).fillna(0.0)
-
-    average_marks = float(
-        data["marks"].mean()
-    ) if not data.empty else 0.0
-
-    maximum = co_maximum[co_no]
+    if matching.empty:
+        matching = saved_co_attainment[
+            saved_co_attainment["co_no"].astype(str).str.strip()
+            == str(co_no)
+        ]
 
     attainment = (
-        average_marks / maximum * 100.0
-        if maximum > 0
+        float(matching.iloc[0]["attainment"])
+        if not matching.empty
         else 0.0
     )
 
     co_results.append(
         {
             "CO": f"CO{co_no}",
-            "Maximum Marks": maximum,
-            "Average Marks": round(
-                average_marks,
-                2
-            ),
-            "Final CO Attainment (%)": round(
-                attainment,
-                2
-            )
+            "CO Attainment (%)": round(attainment, 2),
         }
     )
 
@@ -302,74 +292,14 @@ st.success(
 
 
 # --------------------------------------------------------
-# Save CO Attainment
+# CO Attainment
 # --------------------------------------------------------
 
-if st.button(
-    "💾 Save CO Attainment",
-    key="save_co_attainment",
-    type="secondary"
-):
-
-    try:
-
-        # Ensure table exists.
-        execute_query(
-            """
-            CREATE TABLE IF NOT EXISTS co_attainment(
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                course_id INTEGER NOT NULL,
-                co_no TEXT NOT NULL,
-                attainment REAL DEFAULT 0,
-                UNIQUE(course_id, co_no)
-            )
-            """
-        )
-
-        # The current Simple Edition database does not require
-        # a UNIQUE(course_id, co_no) constraint on co_attainment.
-        # Therefore use DELETE + INSERT rather than ON CONFLICT.
-        execute_query(
-            """
-            DELETE FROM co_attainment
-            WHERE course_id=?
-            """,
-            (course_id,)
-        )
-
-        for _, row in co_attainment_df.iterrows():
-
-            execute_query(
-                """
-                INSERT INTO co_attainment
-                (
-                    course_id,
-                    co_no,
-                    attainment
-                )
-                VALUES (?, ?, ?)
-                """,
-                (
-                    course_id,
-                    row["CO"],
-                    float(
-                        row[
-                            "Final CO Attainment (%)"
-                        ]
-                    )
-                )
-            )
-
-        st.success(
-            "✅ CO Attainment saved successfully."
-        )
-
-    except Exception as e:
-
-        st.error(
-            "Unable to save CO Attainment."
-        )
-        st.exception(e)
+st.info(
+    "CO Attainment is calculated and saved in 05_CO_Attainment.py. "
+    "This module uses those saved values and does not recalculate "
+    "or overwrite CO Attainment."
+)
 
 
 # ========================================================
@@ -470,7 +400,7 @@ co_for_mapping["co_no"] = (
 
 co_for_mapping["attainment"] = pd.to_numeric(
     co_for_mapping[
-        "Final CO Attainment (%)"
+        "CO Attainment (%)"
     ],
     errors="coerce"
 ).fillna(0.0)
@@ -562,7 +492,7 @@ st.dataframe(
 # ========================================================
 
 st.divider()
-st.subheader("📝 Indirect PO Attainment")
+st.subheader("📝 Course Survey / Indirect PO Attainment")
 
 use_indirect = bool(
     course["use_indirect"]
@@ -589,7 +519,7 @@ if use_indirect:
 **Indirect Weight:** {indirect_weight:.0f}%
 
 Final PO = Direct × {direct_weight:.0f}%
-+ Indirect × {indirect_weight:.0f}%
++ Course Survey × {indirect_weight:.0f}%
 """
     )
 
@@ -654,7 +584,7 @@ for index, row in direct_df.iterrows():
         if use_indirect:
 
             indirect_values[po_no] = st.number_input(
-                f"{po_no} Indirect (%)",
+                f"{po_no} Course Survey (%)",
                 min_value=0.0,
                 max_value=100.0,
                 value=float(
@@ -738,6 +668,120 @@ st.dataframe(
 )
 
 
+# ========================================================
+# PSO ATTAINMENT
+# ========================================================
+
+st.divider()
+st.subheader("🎯 PSO Attainment")
+
+st.info(
+    "PSO attainment is calculated separately using CO attainment "
+    "and the saved CO–PSO mapping. Mapping levels are 1 = Low, "
+    "2 = Moderate, 3 = High."
+)
+
+pso_mapping_df = fetch_dataframe(
+    """
+    SELECT
+        co_no,
+        pso_no,
+        mapping_level
+    FROM pso_mapping
+    WHERE course_id=?
+      AND mapping_level > 0
+    ORDER BY co_no, pso_no
+    """,
+    (course_id,)
+)
+
+if pso_mapping_df.empty:
+
+    st.warning(
+        "No CO–PSO mapping found. "
+        "Please save the CO–PSO mapping first."
+    )
+
+else:
+
+    pso_mapping_df["co_no"] = (
+        pso_mapping_df["co_no"]
+        .astype(str)
+        .str.replace("CO", "", regex=False)
+        .str.strip()
+    )
+
+    pso_mapping_df["pso_no"] = (
+        pso_mapping_df["pso_no"]
+        .astype(str)
+        .str.replace("PSO", "", regex=False)
+        .str.strip()
+    )
+
+    pso_mapping_df["mapping_level"] = pd.to_numeric(
+        pso_mapping_df["mapping_level"],
+        errors="coerce",
+    ).fillna(0.0)
+
+    pso_merged = pd.merge(
+        pso_mapping_df,
+        co_for_mapping[
+            [
+                "co_no",
+                "attainment",
+            ]
+        ],
+        on="co_no",
+        how="inner",
+    )
+
+    pso_results = []
+
+    for pso_no in sorted(
+        pso_merged["pso_no"].unique(),
+        key=lambda value: int(value),
+    ):
+
+        pso_data = pso_merged[
+            pso_merged["pso_no"] == pso_no
+        ].copy()
+
+        weighted_sum = (
+            pso_data["attainment"]
+            * pso_data["mapping_level"]
+        ).sum()
+
+        total_weight = pso_data["mapping_level"].sum()
+
+        pso_value = (
+            weighted_sum / total_weight
+            if total_weight > 0
+            else 0.0
+        )
+
+        pso_results.append(
+            {
+                "PSO": f"PSO{pso_no}",
+                "Mapped COs": len(pso_data),
+                "Mapping Weight": round(
+                    float(total_weight),
+                    2,
+                ),
+                "PSO Attainment (%)": round(
+                    float(pso_value),
+                    2,
+                ),
+            }
+        )
+
+    pso_df = pd.DataFrame(pso_results)
+
+    st.dataframe(
+        pso_df,
+        use_container_width=True,
+        hide_index=True,
+    )
+
 # --------------------------------------------------------
 # Save PO Attainment
 # --------------------------------------------------------
@@ -752,6 +796,48 @@ if st.button(
 ):
 
     try:
+
+        # Save PSO attainment separately when CO–PSO mapping exists.
+        if "pso_df" in locals() and not pso_df.empty:
+
+            execute_query(
+                """
+                CREATE TABLE IF NOT EXISTS pso_attainment(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    course_id INTEGER NOT NULL,
+                    pso_no TEXT NOT NULL,
+                    attainment REAL DEFAULT 0
+                )
+                """
+            )
+
+            execute_query(
+                """
+                DELETE FROM pso_attainment
+                WHERE course_id=?
+                """,
+                (course_id,)
+            )
+
+            for _, pso_row in pso_df.iterrows():
+
+                execute_query(
+                    """
+                    INSERT INTO pso_attainment(
+                        course_id,
+                        pso_no,
+                        attainment
+                    )
+                    VALUES (?, ?, ?)
+                    """,
+                    (
+                        course_id,
+                        pso_row["PSO"],
+                        float(
+                            pso_row["PSO Attainment (%)"]
+                        ),
+                    )
+                )
 
         # Use DELETE + INSERT because the current Simple Edition
         # po_attainment table may not have a UNIQUE(course_id, po_no)

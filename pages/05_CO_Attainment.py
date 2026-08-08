@@ -1,63 +1,492 @@
 """
-=========================================================
-OBE Analytics
+OBE Analytics Pro v1.3
 05_CO_Attainment.py
-CO Attainment
-=========================================================
+STEP 9 - CO ATTAINMENT
 
-Automatic CO mark generation rule:
-    CE -> CO1, CO2, CO3, CO4, CO5 equally
-    S1 -> CO1, CO2 equally
-    S2 -> CO3, CO4, CO5 equally
+Uses the fixed assessment-to-CO distribution defined for v1.3.
 
-For each student:
-    CO1 = CE/5 + S1/2
-    CO2 = CE/5 + S1/2
-    CO3 = CE/5 + S2/3
-    CO4 = CE/5 + S2/3
-    CO5 = CE/5 + S2/3
+THEORY
+    CE  -> CO1-CO5 equally
+    S1  -> CO1-CO2 equally
+    S2  -> CO3-CO5 equally
 
-The generated values are stored in co_marks and can then be used
-by the CO attainment calculation.
-=========================================================
+    CE /25, S1 /30, S2 /45
+    Each CO maximum = 20 marks.
+
+THEORY + PRACTICAL
+    Theory = 70%
+        CE /25, S1 /30, S2 /45
+        Fixed Theory CO distribution as above.
+
+    Practical = 30%
+        Record Work /60 -> CO1-CO5 equally
+        Mid 1 /20       -> CO1-CO2 equally
+        Mid 2 /20       -> CO3-CO5 equally
+
+    Practical CO maximums are assessment-derived and therefore:
+        CO1/CO2 = 60/5 + 20/2 = 22
+        CO3/CO4/CO5 = 60/5 + 20/3 = 18.6667
+
+    Practical attainment is normalized to 100% per CO and then
+    weighted by 30%. Theory attainment is weighted by 70%.
+
+CAPSTONE PROJECT
+    Continuous Evaluation /100 -> CO1-CO5 equally.
+
+INTERNSHIP
+    Continuous Evaluation /50 -> CO1-CO5 equally.
+
+CE grade conversion has already been performed during marks entry
+for Theory and Theory + Practical:
+    O=25, A+=22.25, A=19.75, B+=17.25, B=14.75,
+    C=13.50, P=12.25, L/F=0.
+
+This module:
+    - generates CO-wise student marks using fixed rules
+    - applies the institutional 70% student threshold
+    - calculates Student Achievement (%) for each CO
+    - assigns CO Attainment Level 0/1/2/3
+    - stores generated CO marks in co_marks
+    - stores Student Achievement (%) and Attainment Level in co_attainment
+
+Institutional CO Attainment Rule:
+    Student threshold = 70% of the maximum marks allocated to the CO.
+
+    >= 60% students meeting the threshold -> Level 3 (High)
+    >= 50% students meeting the threshold -> Level 2 (Medium)
+    >= 40% students meeting the threshold -> Level 1 (Low)
+    <  40% students meeting the threshold -> Level 0 (Not Attained)
+
+It does NOT calculate CO-PO mapping or PO attainment.
 """
 
-import streamlit as st
+from __future__ import annotations
+
+import sqlite3
+from typing import Dict, List, Tuple
+
 import pandas as pd
+import streamlit as st
 
 from database import (
-    get_active_course,
+    execute_query,
     fetch_all,
     fetch_dataframe,
-    execute_query
-)
-
-from calculations import (
-    calculate_direct_attainment,
-    calculate_co_attainment,
-    calculate_final_co_attainment
+    get_active_course,
+    get_connection,
+    initialize_database,
 )
 
 
-# --------------------------------------------------------
+# ------------------------------------------------------------
 # Page Configuration
-# --------------------------------------------------------
+# ------------------------------------------------------------
 
 st.set_page_config(
     page_title="CO Attainment",
     page_icon="🎯",
-    layout="wide"
+    layout="wide",
 )
 
-st.title("🎯 CO Attainment")
-st.divider()
+initialize_database()
+def ensure_co_attainment_columns() -> None:
+    """Add v1.4 CO-attainment evidence columns safely."""
+
+    conn = get_connection()
+
+    try:
+        columns = {
+            row[1]
+            for row in conn.execute(
+                "PRAGMA table_info(co_attainment)"
+            ).fetchall()
+        }
+
+        if "achievement_percent" not in columns:
+            conn.execute(
+                """
+                ALTER TABLE co_attainment
+                ADD COLUMN achievement_percent REAL DEFAULT 0
+                """
+            )
+
+        if "attainment_level" not in columns:
+            conn.execute(
+                """
+                ALTER TABLE co_attainment
+                ADD COLUMN attainment_level INTEGER DEFAULT 0
+                """
+            )
+
+        conn.commit()
+
+    finally:
+        conn.close()
+
+ensure_co_attainment_columns()
 
 
-# --------------------------------------------------------
+# ------------------------------------------------------------
+# Fixed Assessment Rules
+# ------------------------------------------------------------
+
+THEORY_DISTRIBUTION = {
+    "CE": {1: 0.20, 2: 0.20, 3: 0.20, 4: 0.20, 5: 0.20},
+    "S1": {1: 0.50, 2: 0.50, 3: 0.00, 4: 0.00, 5: 0.00},
+    "S2": {1: 0.00, 2: 0.00, 3: 1 / 3, 4: 1 / 3, 5: 1 / 3},
+}
+
+THEORY_MAX = {
+    "CE": 25.0,
+    "S1": 30.0,
+    "S2": 45.0,
+}
+
+PRACTICAL_DISTRIBUTION = {
+    "Record Work": {1: 0.20, 2: 0.20, 3: 0.20, 4: 0.20, 5: 0.20},
+    "Mid 1": {1: 0.50, 2: 0.50, 3: 0.00, 4: 0.00, 5: 0.00},
+    "Mid 2": {1: 0.00, 2: 0.00, 3: 1 / 3, 4: 1 / 3, 5: 1 / 3},
+}
+
+PRACTICAL_MAX = {
+    "Record Work": 60.0,
+    "Mid 1": 20.0,
+    "Mid 2": 20.0,
+}
+
+CO_NUMBERS = [1, 2, 3, 4, 5]
+
+
+# ------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------
+
+def safe_float(value) -> float:
+    if value is None or pd.isna(value):
+        return 0.0
+    return float(value)
+
+
+def calculate_theory_co_marks(row) -> Dict[int, float]:
+    """Return raw theory CO marks, maximum 20 for each CO."""
+
+    ce = safe_float(row["ce"])
+    s1 = safe_float(row["s1"])
+    s2 = safe_float(row["s2"])
+
+    return {
+        1: ce * 0.20 + s1 * 0.50,
+        2: ce * 0.20 + s1 * 0.50,
+        3: ce * 0.20 + s2 * (1 / 3),
+        4: ce * 0.20 + s2 * (1 / 3),
+        5: ce * 0.20 + s2 * (1 / 3),
+    }
+
+
+def calculate_practical_co_marks(row) -> Dict[int, float]:
+    """Return raw practical CO marks using fixed distributions."""
+
+    record_work = safe_float(row["record_work"])
+    mid1 = safe_float(row["mid1"])
+    mid2 = safe_float(row["mid2"])
+
+    return {
+        1: record_work * 0.20 + mid1 * 0.50,
+        2: record_work * 0.20 + mid1 * 0.50,
+        3: record_work * 0.20 + mid2 * (1 / 3),
+        4: record_work * 0.20 + mid2 * (1 / 3),
+        5: record_work * 0.20 + mid2 * (1 / 3),
+    }
+
+
+def practical_co_maximums() -> Dict[int, float]:
+    return {
+        1: 60.0 * 0.20 + 20.0 * 0.50,
+        2: 60.0 * 0.20 + 20.0 * 0.50,
+        3: 60.0 * 0.20 + 20.0 * (1 / 3),
+        4: 60.0 * 0.20 + 20.0 * (1 / 3),
+        5: 60.0 * 0.20 + 20.0 * (1 / 3),
+    }
+
+
+
+def attainment_level_from_student_percent(student_percent: float) -> int:
+    """Return institutional CO attainment level 0-3."""
+
+    if student_percent >= 60.0:
+        return 3
+
+    if student_percent >= 50.0:
+        return 2
+
+    if student_percent >= 40.0:
+        return 1
+
+    return 0
+
+
+def calculate_theory_co_maximums() -> Dict[int, float]:
+    """Maximum Theory CO marks after fixed distribution."""
+
+    return {
+        1: 20.0,
+        2: 20.0,
+        3: 20.0,
+        4: 20.0,
+        5: 20.0,
+    }
+
+
+def calculate_practical_co_maximums() -> Dict[int, float]:
+    """Maximum Practical CO marks from the fixed assessments."""
+
+    return {
+        1: 60.0 * 0.20 + 20.0 * 0.50,
+        2: 60.0 * 0.20 + 20.0 * 0.50,
+        3: 60.0 * 0.20 + 20.0 * (1 / 3),
+        4: 60.0 * 0.20 + 20.0 * (1 / 3),
+        5: 60.0 * 0.20 + 20.0 * (1 / 3),
+    }
+
+
+def calculate_student_co_result(
+    row,
+    course_type: str
+) -> Tuple[Dict[int, float], Dict[int, float], Dict[int, float]]:
+    """
+    Return:
+        final CO marks,
+        CO maximum marks,
+        student-level CO achievement percentages.
+
+    The returned achievement percentage is the percentage of the
+    maximum CO marks achieved by this student.
+
+    For Theory + Practical, the 70:30 course weighting is applied
+    at the CO level before the student-level 70% threshold is tested.
+    """
+
+    if course_type == "Theory":
+
+        theory_marks = calculate_theory_co_marks(row)
+        theory_maximums = calculate_theory_co_maximums()
+
+        achievement = {
+            co_no: (
+                theory_marks[co_no]
+                / theory_maximums[co_no]
+                * 100.0
+                if theory_maximums[co_no] > 0
+                else 0.0
+            )
+            for co_no in CO_NUMBERS
+        }
+
+        return (
+            theory_marks,
+            theory_maximums,
+            achievement,
+        )
+
+    if course_type == "Theory + Practical":
+
+        theory_marks = calculate_theory_co_marks(row)
+        practical_marks = calculate_practical_co_marks(row)
+
+        theory_maximums = calculate_theory_co_maximums()
+        practical_maximums = calculate_practical_co_maximums()
+
+        # The course-level 70:30 weighting is applied to each
+        # student's CO marks and CO maximums.
+        final_marks = {}
+        final_maximums = {}
+        achievement = {}
+
+        for co_no in CO_NUMBERS:
+
+            weighted_theory_max = (
+                0.70 * theory_maximums[co_no]
+            )
+
+            weighted_practical_max = (
+                0.30 * practical_maximums[co_no]
+            )
+
+            final_maximum = (
+                weighted_theory_max
+                + weighted_practical_max
+            )
+
+            weighted_theory_marks = (
+                0.70 * theory_marks[co_no]
+            )
+
+            weighted_practical_marks = (
+                0.30 * practical_marks[co_no]
+            )
+
+            final_mark = (
+                weighted_theory_marks
+                + weighted_practical_marks
+            )
+
+            final_maximums[co_no] = final_maximum
+            final_marks[co_no] = final_mark
+
+            achievement[co_no] = (
+                final_mark / final_maximum * 100.0
+                if final_maximum > 0
+                else 0.0
+            )
+
+        return (
+            final_marks,
+            final_maximums,
+            achievement,
+        )
+
+    if course_type == "Capstone Project":
+
+        ce = safe_float(row["continuous_evaluation"])
+
+        # CE /100, equally distributed across 5 COs.
+        co_marks = {
+            co_no: ce / 5.0
+            for co_no in CO_NUMBERS
+        }
+
+        # Each CO maximum = 100/5 = 20.
+        co_maximums = {
+            co_no: 20.0
+            for co_no in CO_NUMBERS
+        }
+
+        achievement = {
+            co_no: (
+                co_marks[co_no]
+                / co_maximums[co_no]
+                * 100.0
+            )
+            for co_no in CO_NUMBERS
+        }
+
+        return (
+            co_marks,
+            co_maximums,
+            achievement,
+        )
+
+    if course_type == "Internship":
+
+        ce = safe_float(row["continuous_evaluation"])
+
+        # CE /50, equally distributed across 5 COs.
+        co_marks = {
+            co_no: ce / 5.0
+            for co_no in CO_NUMBERS
+        }
+
+        # Each CO maximum = 50/5 = 10.
+        co_maximums = {
+            co_no: 10.0
+            for co_no in CO_NUMBERS
+        }
+
+        achievement = {
+            co_no: (
+                co_marks[co_no]
+                / co_maximums[co_no]
+                * 100.0
+            )
+            for co_no in CO_NUMBERS
+        }
+
+        return (
+            co_marks,
+            co_maximums,
+            achievement,
+        )
+
+    raise ValueError(
+        f"Unsupported Course Type: {course_type}"
+    )
+
+
+def save_co_mark(
+    course_id: int,
+    student_id: str,
+    co_no: int,
+    marks_value: float,
+) -> None:
+
+    execute_query(
+        """
+        INSERT INTO co_marks(
+            course_id,
+            student_id,
+            co_no,
+            marks
+        )
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(course_id, student_id, co_no)
+        DO UPDATE SET
+            marks=excluded.marks
+        """,
+        (
+            course_id,
+            student_id,
+            co_no,
+            marks_value,
+        ),
+    )
+
+
+def save_co_attainment(
+    course_id: int,
+    co_no: int,
+    achievement_percent: float,
+    attainment_level: int,
+) -> None:
+
+    execute_query(
+        """
+        INSERT INTO co_attainment(
+            course_id,
+            co_no,
+            attainment,
+            achievement_percent,
+            attainment_level
+        )
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            course_id,
+            co_no,
+            achievement_percent,
+            achievement_percent,
+            attainment_level,
+        ),
+    )
+
+
+def clear_course_attainment(course_id: int) -> None:
+
+    execute_query(
+        """
+        DELETE FROM co_attainment
+        WHERE course_id=?
+        """,
+        (course_id,),
+    )
+
+
+# ------------------------------------------------------------
 # Active Course
-# --------------------------------------------------------
+# ------------------------------------------------------------
 
 course = get_active_course()
+
+st.title("🎯 CO Attainment")
 
 if course is None:
     st.warning(
@@ -65,28 +494,22 @@ if course is None:
     )
     st.stop()
 
+course_id = int(course["id"])
+course_type = course["course_type"] or "Theory"
+
 st.success(
-    f"""
-### Active Course
-
-**Course Code :** {course['course_code']}
-
-**Course Name :** {course['course_name']}
-
-**Faculty :** {course['faculty']}
-
-**Semester :** {course['semester']}
-
-**Academic Year :** {course['academic_year']}
-"""
+    f"**Active Course:** {course['course_code']} - "
+    f"{course['course_name']} | {course_type}"
 )
 
-st.divider()
+st.caption(
+    f"Academic Year: {course['academic_year'] or 'Not specified'}"
+)
 
 
-# --------------------------------------------------------
-# Load Course Outcomes
-# --------------------------------------------------------
+# ------------------------------------------------------------
+# CO Validation
+# ------------------------------------------------------------
 
 cos = fetch_all(
     """
@@ -98,19 +521,27 @@ cos = fetch_all(
     WHERE course_id=?
     ORDER BY co_no
     """,
-    (course["id"],)
+    (course_id,),
 )
 
-if len(cos) != 5:
-    st.warning(
-        "Please define all 5 Course Outcomes first."
+co_numbers = {
+    int(row["co_no"])
+    for row in cos
+    if row["co_no"] is not None
+}
+
+if len(cos) != 5 or co_numbers != set(CO_NUMBERS):
+
+    st.error(
+        "CO Attainment requires CO1–CO5 to be defined "
+        "for the Active Course."
     )
     st.stop()
 
 
-# --------------------------------------------------------
+# ------------------------------------------------------------
 # Load Student Marks
-# --------------------------------------------------------
+# ------------------------------------------------------------
 
 students = fetch_dataframe(
     """
@@ -118,16 +549,22 @@ students = fetch_dataframe(
         student_id,
         student_name,
         ce,
+        ce_grade,
         s1,
-        s2
+        s2,
+        record_work,
+        mid1,
+        mid2,
+        continuous_evaluation
     FROM marks
     WHERE course_id=?
     ORDER BY student_id
     """,
-    (course["id"],)
+    (course_id,),
 )
 
 if students.empty:
+
     st.warning(
         "No student marks are available for this course."
     )
@@ -137,148 +574,137 @@ st.info(
     f"Total Students: {len(students)}"
 )
 
+
+# ------------------------------------------------------------
+# Assessment Rules Display
+# ------------------------------------------------------------
+
 st.divider()
+st.subheader("Fixed CO Assessment Distribution")
 
+if course_type in {"Theory", "Theory + Practical"}:
 
-# --------------------------------------------------------
-# Direct / Indirect Settings
-# --------------------------------------------------------
-
-use_indirect = bool(
-    course["use_indirect"]
-)
-
-direct_weight = float(
-    course["direct_weight"]
-)
-
-indirect_weight = float(
-    course["indirect_weight"]
-)
-
-st.subheader("Attainment Settings")
-
-col1, col2, col3 = st.columns(3)
-
-with col1:
-    st.metric(
-        "Direct Weight",
-        f"{direct_weight:.0f}%"
-        if use_indirect else "100%"
+    theory_table = pd.DataFrame(
+        [
+            {
+                "Assessment": "CE",
+                "CO1": "20%",
+                "CO2": "20%",
+                "CO3": "20%",
+                "CO4": "20%",
+                "CO5": "20%",
+            },
+            {
+                "Assessment": "S1",
+                "CO1": "50%",
+                "CO2": "50%",
+                "CO3": "—",
+                "CO4": "—",
+                "CO5": "—",
+            },
+            {
+                "Assessment": "S2",
+                "CO1": "—",
+                "CO2": "—",
+                "CO3": "33.33%",
+                "CO4": "33.33%",
+                "CO5": "33.33%",
+            },
+        ]
     )
 
-with col2:
-    st.metric(
-        "Indirect Weight",
-        f"{indirect_weight:.0f}%"
-        if use_indirect else "0%"
+    st.markdown("**Theory Component**")
+    st.dataframe(
+        theory_table,
+        use_container_width=True,
+        hide_index=True,
     )
 
-with col3:
-    st.metric(
-        "Total Weight",
-        "100%"
+if course_type == "Theory + Practical":
+
+    practical_table = pd.DataFrame(
+        [
+            {
+                "Assessment": "Record Work",
+                "Maximum": 60,
+                "CO Distribution": "CO1–CO5 equally",
+            },
+            {
+                "Assessment": "Mid 1",
+                "Maximum": 20,
+                "CO Distribution": "CO1–CO2 equally",
+            },
+            {
+                "Assessment": "Mid 2",
+                "Maximum": 20,
+                "CO Distribution": "CO3–CO5 equally",
+            },
+        ]
     )
 
-if use_indirect:
+    st.markdown("**Practical Component — 30%**")
+    st.dataframe(
+        practical_table,
+        use_container_width=True,
+        hide_index=True,
+    )
+
     st.info(
-        f"Final CO Attainment = Direct "
-        f"({direct_weight:.0f}%) + Indirect "
-        f"({indirect_weight:.0f}%)"
+        "Theory = 70% and Practical = 30%. "
+        "Practical CO attainment is normalized per CO before "
+        "applying the 30% practical weight."
     )
-else:
+
+if course_type == "Capstone Project":
+
     st.info(
-        "Indirect attainment is disabled. "
-        "Direct attainment is treated as 100%."
+        "Continuous Evaluation /100 is distributed equally "
+        "across CO1–CO5."
     )
+
+if course_type == "Internship":
+
+    st.info(
+        "Continuous Evaluation /50 is distributed equally "
+        "across CO1–CO5."
+    )
+
+
+# ------------------------------------------------------------
+# Generate CO Marks and Calculate Attainment
+# ------------------------------------------------------------
 
 st.divider()
+st.subheader("CO Attainment Calculation")
 
-
-# --------------------------------------------------------
-# CO Assessment Distribution
-# --------------------------------------------------------
-
-st.subheader("CO Assessment Distribution")
-
-st.caption(
-    "Enter the maximum marks contributing to each CO. "
-    "The total must be 100."
-)
-
-co_distribution = {}
-
-cols = st.columns(5)
-
-for index, co in enumerate(cos):
-
-    co_no = int(co["co_no"])
-
-    with cols[index]:
-
-        co_distribution[co_no] = st.number_input(
-            f"CO{co_no} Maximum Marks",
-            min_value=0.0,
-            max_value=100.0,
-            value=20.0,
-            step=1.0,
-            key=f"co_max_{co_no}"
-        )
-
-distribution_total = sum(
-    co_distribution.values()
-)
-
-st.metric(
-    "Total CO Marks",
-    f"{distribution_total:.1f}"
-)
-
-if distribution_total != 100:
-    st.warning(
-        "CO assessment distribution must total 100 marks."
-    )
-else:
-    st.success(
-        "CO assessment distribution is valid."
-    )
-
-
-# ========================================================
-# AUTOMATIC CO MARK GENERATION
-# ========================================================
-
-st.divider()
-
-st.subheader(
-    "⚙️ Automatic CO Mark Generation"
-)
-
-st.info(
-    """
-The system can generate CO-wise marks automatically from the
-existing CE, S1 and S2 marks using the following rule:
-
-• CE is distributed equally among CO1–CO5.
-• S1 is distributed equally between CO1 and CO2.
-• S2 is distributed equally among CO3, CO4 and CO5.
-"""
-)
-
-st.caption(
-    "This is an equal-distribution assumption and should be "
-    "documented as the CO mark generation methodology."
+st.write(
+    "The system applies the institutional CO Attainment rule: "
+    "a student must score at least 70% of the maximum CO marks. "
+    "The CO level is then assigned from the percentage of students "
+    "meeting that threshold."
 )
 
 if st.button(
-    "⚙️ Generate CO Marks Automatically",
+    "Calculate CO Attainment",
     type="primary",
-    key="generate_co_marks"
+    key="calculate_co_attainment_v13",
 ):
 
     try:
 
         generated_count = 0
+
+        student_achievement = {
+            co_no: []
+            for co_no in CO_NUMBERS
+        }
+
+        co_maximums = {
+            co_no: []
+            for co_no in CO_NUMBERS
+        }
+
+        clear_course_attainment(course_id)
 
         for _, student in students.iterrows():
 
@@ -286,377 +712,228 @@ if st.button(
                 student["student_id"]
             )
 
-            ce = float(
-                student["ce"] or 0
+            (
+                final_co_marks,
+                final_co_maximums,
+                achievement
+            ) = calculate_student_co_result(
+                student,
+                course_type,
             )
 
-            s1 = float(
-                student["s1"] or 0
-            )
+            for co_no in CO_NUMBERS:
 
-            s2 = float(
-                student["s2"] or 0
-            )
+                save_co_mark(
+                    course_id=course_id,
+                    student_id=student_id,
+                    co_no=co_no,
+                    marks_value=final_co_marks[co_no],
+                )
 
-            ce_part = ce / 5.0
-            s1_part = s1 / 2.0
-            s2_part = s2 / 3.0
+                student_achievement[co_no].append(
+                    achievement[co_no]
+                )
 
-            generated_marks = {
-                1: ce_part + s1_part,
-                2: ce_part + s1_part,
-                3: ce_part + s2_part,
-                4: ce_part + s2_part,
-                5: ce_part + s2_part
-            }
-
-            for co_no, marks_value in generated_marks.items():
-
-                execute_query(
-                    """
-                    INSERT INTO co_marks
-                    (
-                        course_id,
-                        student_id,
-                        co_no,
-                        marks
-                    )
-                    VALUES (?, ?, ?, ?)
-
-                    ON CONFLICT(
-                        course_id,
-                        student_id,
-                        co_no
-                    )
-
-                    DO UPDATE SET
-                        marks=excluded.marks
-                    """,
-                    (
-                        course["id"],
-                        student_id,
-                        co_no,
-                        marks_value
-                    )
+                co_maximums[co_no].append(
+                    final_co_maximums[co_no]
                 )
 
             generated_count += 1
 
+        final_rows = []
+
+        for co_no in CO_NUMBERS:
+
+            achievement_values = student_achievement[co_no]
+
+            maximum_values = co_maximums[co_no]
+
+            # Student qualifies when the student's CO achievement
+            # is at least 70% of the CO maximum.
+            qualifying_students = sum(
+                1
+                for value in achievement_values
+                if value >= 70.0
+            )
+
+            total_students = len(
+                achievement_values
+            )
+
+            student_percent = (
+                qualifying_students
+                / total_students
+                * 100.0
+                if total_students > 0
+                else 0.0
+            )
+
+            attainment_level = (
+                attainment_level_from_student_percent(
+                    student_percent
+                )
+            )
+
+            representative_maximum = (
+                maximum_values[0]
+                if maximum_values
+                else 0.0
+            )
+
+            threshold = (
+                representative_maximum * 0.70
+            )
+
+            save_co_attainment(
+                course_id=course_id,
+                co_no=co_no,
+                achievement_percent=student_percent,
+                attainment_level=attainment_level,
+            )
+
+            final_rows.append(
+                {
+                    "CO": f"CO{co_no}",
+                    "CO Maximum Marks": round(
+                        representative_maximum,
+                        4,
+                    ),
+                    "70% Threshold": round(
+                        threshold,
+                        4,
+                    ),
+                    "Students ≥ Threshold": (
+                        f"{qualifying_students}/"
+                        f"{total_students}"
+                    ),
+                    "Student Achievement (%)": round(
+                        student_percent,
+                        2,
+                    ),
+                    "CO Attainment Level": (
+                        f"{attainment_level} – "
+                        f"{['Not Attained', 'Low', 'Medium', 'High'][attainment_level]}"
+                    ),
+                }
+            )
+
         st.success(
-            f"✅ CO marks generated successfully for "
+            f"CO attainment calculated successfully for "
             f"{generated_count} students."
         )
 
-        st.rerun()
-
-    except Exception as e:
-
-        st.error(
-            "Unable to generate automatic CO marks."
+        st.dataframe(
+            pd.DataFrame(final_rows),
+            use_container_width=True,
+            hide_index=True,
         )
 
-        st.exception(e)
+    except Exception as exc:
+
+        st.error(
+            "Unable to calculate CO attainment."
+        )
+        st.exception(exc)
 
 
-# --------------------------------------------------------
-# CO Marks Data Status
-# --------------------------------------------------------
-
-st.subheader("CO Marks Data Status")
-
-co_status = fetch_dataframe(
-    """
-    SELECT
-        COUNT(DISTINCT student_id) AS students_with_co_marks
-    FROM co_marks
-    WHERE course_id=?
-    """,
-    (course["id"],)
-)
-
-students_with_co_marks = 0
-
-if not co_status.empty:
-    students_with_co_marks = int(
-        co_status.iloc[0]["students_with_co_marks"] or 0
-    )
-
-c1, c2 = st.columns(2)
-
-with c1:
-    st.metric(
-        "Students",
-        len(students)
-    )
-
-with c2:
-    st.metric(
-        "Students with CO Marks",
-        students_with_co_marks
-    )
-
-if students_with_co_marks == len(students):
-
-    st.success(
-        "✅ CO marks are available for all students."
-    )
-
-else:
-
-    st.warning(
-        f"{len(students) - students_with_co_marks} "
-        "student(s) still do not have CO marks."
-    )
-
+# ------------------------------------------------------------
+# Stored CO Attainment
+# ------------------------------------------------------------
 
 st.divider()
+st.subheader("Stored CO Attainment")
 
-
-# --------------------------------------------------------
-# CO-wise Student Marks - Manual Entry
-# --------------------------------------------------------
-
-st.subheader("CO-wise Student Marks")
-
-st.info(
-    "Manual entry is available when individual CO marks need "
-    "to be corrected after automatic generation."
-)
-
-student_options = (
-    students["student_id"].astype(str)
-    + " - "
-    + students["student_name"].astype(str)
-)
-
-selected_student = st.selectbox(
-    "Select Student",
-    student_options,
-    key="co_marks_student"
-)
-
-selected_student_id = selected_student.split(
-    " - ",
-    1
-)[0]
-
-
-# --------------------------------------------------------
-# Existing CO Marks
-# --------------------------------------------------------
-
-existing_co_marks = fetch_all(
+stored = fetch_all(
     """
     SELECT
         co_no,
-        marks
-    FROM co_marks
+        attainment,
+        achievement_percent,
+        attainment_level
+    FROM co_attainment
     WHERE course_id=?
-    AND student_id=?
+    ORDER BY co_no
     """,
-    (
-        course["id"],
-        selected_student_id
-    )
+    (course_id,),
 )
 
-existing_marks = {}
+if stored:
 
-for row in existing_co_marks:
-
-    existing_marks[
-        int(row["co_no"])
-    ] = float(row["marks"])
-
-
-# --------------------------------------------------------
-# CO Marks Entry
-# --------------------------------------------------------
-
-co_marks_values = {}
-
-mark_cols = st.columns(5)
-
-for index, co in enumerate(cos):
-
-    co_no = int(co["co_no"])
-
-    maximum = float(
-        co_distribution[co_no]
+    stored_table = pd.DataFrame(
+        [
+            {
+                "CO": f"CO{row['co_no']}",
+                "Student Achievement (%)": round(
+                    float(
+                        row["achievement_percent"]
+                        if row["achievement_percent"] is not None
+                        else row["attainment"]
+                    ),
+                    2,
+                ),
+                "Attainment Level": (
+                    f"{int(row['attainment_level'])} – "
+                    f"{['Not Attained', 'Low', 'Medium', 'High'][int(row['attainment_level'])]}"
+                ),
+            }
+            for row in stored
+        ]
     )
 
-    with mark_cols[index]:
-
-        co_marks_values[co_no] = st.number_input(
-            f"CO{co_no}",
-            min_value=0.0,
-            max_value=maximum,
-            value=min(
-                existing_marks.get(
-                    co_no,
-                    0.0
-                ),
-                maximum
-            ),
-            step=0.5,
-            key=f"student_{selected_student_id}_co_{co_no}"
-        )
-
-
-# --------------------------------------------------------
-# Save Manual CO Marks
-# --------------------------------------------------------
-
-if st.button(
-    "💾 Save CO Marks",
-    type="secondary"
-):
-
-    try:
-
-        for co_no, marks_value in co_marks_values.items():
-
-            execute_query(
-                """
-                INSERT INTO co_marks
-                (
-                    course_id,
-                    student_id,
-                    co_no,
-                    marks
-                )
-                VALUES (?, ?, ?, ?)
-
-                ON CONFLICT(
-                    course_id,
-                    student_id,
-                    co_no
-                )
-
-                DO UPDATE SET
-                    marks=excluded.marks
-                """,
-                (
-                    course["id"],
-                    selected_student_id,
-                    co_no,
-                    marks_value
-                )
-            )
-
-        st.success(
-            f"CO marks saved for student "
-            f"{selected_student_id}."
-        )
-
-        st.rerun()
-
-    except Exception as e:
-
-        st.error(
-            "Unable to save CO marks."
-        )
-
-        st.exception(e)
-
-
-# ========================================================
-# CO ATTAINMENT CALCULATION
-# ========================================================
-
-st.divider()
-
-st.subheader("📊 CO Attainment Calculation")
-
-if distribution_total != 100:
-
-    st.warning(
-        "Set the CO assessment distribution total to 100 "
-        "before calculating attainment."
+    st.dataframe(
+        stored_table,
+        use_container_width=True,
+        hide_index=True,
     )
 
 else:
 
-    co_attainment_rows = []
-
-    for co in cos:
-
-        co_no = int(
-            co["co_no"]
-        )
-
-        maximum = float(
-            co_distribution[co_no]
-        )
-
-        co_data = fetch_dataframe(
-            """
-            SELECT
-                cm.student_id,
-                cm.marks
-            FROM co_marks cm
-            INNER JOIN marks m
-                ON m.course_id = cm.course_id
-                AND m.student_id = cm.student_id
-            WHERE cm.course_id=?
-            AND cm.co_no=?
-            """,
-            (
-                course["id"],
-                co_no
-            )
-        )
-
-        if co_data.empty:
-
-            average_marks = 0.0
-            direct_attainment = 0.0
-
-        else:
-
-            average_marks = float(
-                co_data["marks"].mean()
-            )
-
-            if maximum > 0:
-
-                direct_attainment = (
-                    average_marks / maximum
-                ) * 100.0
-
-            else:
-
-                direct_attainment = 0.0
-
-        co_attainment_rows.append(
-            {
-                "CO": f"CO{co_no}",
-                "Maximum Marks": round(
-                    maximum,
-                    2
-                ),
-                "Average Marks": round(
-                    average_marks,
-                    2
-                ),
-                "Direct Attainment (%)": round(
-                    direct_attainment,
-                    2
-                )
-            }
-        )
-
-    attainment_df = pd.DataFrame(
-        co_attainment_rows
+    st.info(
+        "CO attainment has not been calculated yet."
     )
+
+
+# ------------------------------------------------------------
+# CO-wise Student Marks
+# ------------------------------------------------------------
+
+st.divider()
+st.subheader("Generated CO-wise Student Marks")
+
+co_marks_data = fetch_dataframe(
+    """
+    SELECT
+        cm.student_id AS "Roll Number",
+        m.student_name AS "Student Name",
+        cm.co_no AS "CO",
+        cm.marks AS "CO Marks"
+    FROM co_marks cm
+    INNER JOIN marks m
+        ON m.course_id=cm.course_id
+       AND m.student_id=cm.student_id
+    WHERE cm.course_id=?
+    ORDER BY cm.student_id, cm.co_no
+    """,
+    (course_id,),
+)
+
+if not co_marks_data.empty:
 
     st.dataframe(
-        attainment_df,
+        co_marks_data,
         use_container_width=True,
-        hide_index=True
+        hide_index=True,
     )
 
-    st.success(
-        "CO attainment calculated from the generated/manual "
-        "CO-wise marks."
+else:
+
+    st.info(
+        "CO-wise marks have not been generated yet."
     )
+
+
+st.caption(
+    "CO Attainment uses the institutional 70% student threshold "
+    "and 0/1/2/3 attainment levels. CO–PO Mapping and PO Attainment "
+    "are separate modules."
+)
